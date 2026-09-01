@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rollin' Llama Flasher</title>
+<style>
+  :root {
+    --bg: #14161a; --panel: #1d2026; --text: #e8e6e0; --dim: #9a978f;
+    --accent: #e0a010; --ok: #4caf7d; --err: #d05c5c; --line: #2c3038;
+    --panel2: #181b20; --dot: #4a4e56; --btn: #e0a010; --btn-dis: #3a3e46;
+    color-scheme: dark;
+  }
+  :root[data-theme="light"] {
+    --bg: #f3f1ec; --panel: #ffffff; --text: #26282d; --dim: #767268;
+    --accent: #9c7106; --ok: #2e7d54; --err: #c04a4a; --line: #ddd8cd;
+    --panel2: #faf8f2; --dot: #c9c5ba; --btn: #e0a010; --btn-dis: #e4e1d8;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.45 system-ui, sans-serif;
+  }
+  main { max-width: 780px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+  header { display: flex; align-items: center; gap: .8rem; margin-bottom: .8rem; }
+  header img { height: 74px; width: auto; display: block; margin-left: -8px; }
+  header .tag { margin-top: .15rem; }
+  main > p { margin: 1.4rem 0 2rem; }
+  footer {
+    text-align: center; color: var(--dim); font-size: .78rem;
+    margin-top: 2.2rem;
+  }
+  h2 { font-size: 1rem; margin: 0 0 .5rem; }
+  .tag { color: var(--dim); font-size: .82rem; }
+  a { color: var(--accent); }
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: .8rem 1rem; margin-top: .7rem;
+  }
+  button {
+    background: var(--btn); color: #1a1608; border: 0; border-radius: 6px;
+    padding: .3rem .75rem; font: inherit; font-size: .85rem;
+    font-weight: 600; cursor: pointer;
+  }
+  button:disabled { background: var(--btn-dis); color: var(--dim); cursor: default; }
+  #connect button + button { margin-left: .5rem; }
+  #firmware p { margin-top: 1.1rem; }
+  #fw-version { margin-left: .35rem; }
+  #settings .opt { display: block; margin: .35rem 0; }
+  #settings .opt input { margin-right: .5rem; vertical-align: -1px; }
+  #settings p { margin: .9rem 0 0; }
+  .theme-switch {
+    margin-left: auto; display: flex;
+    border: 1px solid var(--line); border-radius: 6px; overflow: hidden;
+  }
+  .theme-switch button {
+    background: none; color: var(--dim); font-weight: 400;
+    padding: .2rem .55rem; border: 0; border-radius: 0;
+  }
+  .theme-switch button.active {
+    background: var(--line); color: var(--text); cursor: default;
+  }
+  .hidden { display: none; }
+  .status { color: var(--dim); font-size: .82rem; margin-top: .4rem; min-height: 1.1em; }
+  .ok { color: var(--ok); } .err { color: var(--err); }
+  .subcard {
+    border: 1px solid var(--line); border-radius: 7px;
+    padding: .55rem .75rem; margin-top: .6rem; background: var(--panel2);
+  }
+  .subcard .phead {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: .8rem; margin-bottom: .3rem;
+  }
+  .subcard .phead b {
+    font-size: .95rem; letter-spacing: .03em; text-transform: uppercase;
+    color: var(--accent);
+  }
+  th { color: var(--dim); font-weight: 500; font-size: .72rem;
+       text-transform: uppercase; letter-spacing: .05em; }
+  .dot {
+    display: inline-block; width: .6em; height: .6em; border-radius: 50%;
+    background: var(--dot); margin-right: .55em; vertical-align: 8%;
+  }
+  .dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
+  .dot.busy {
+    background: transparent;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    width: .5em; height: .5em;
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .pver { color: var(--dim); text-transform: none; }
+  .subcard .pstatus { font-size: .78rem; }
+  table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  td, th { padding: .3rem .35rem; border-bottom: 1px solid var(--line); text-align: left; }
+  tr:last-child td { border-bottom: 0; }
+  /* fixed column grid so every persona card lines up */
+  .subcard table { table-layout: fixed; }
+  .subcard td:nth-child(2), .subcard th:nth-child(2) { width: 5.2rem; text-align: right; }
+  .subcard td:nth-child(3), .subcard th:nth-child(3) { width: 20rem; padding-left: 1.1rem; }
+  .subcard td:nth-child(4), .subcard th:nth-child(4) { width: 5.4rem; text-align: right; padding: .38rem 0 .38rem .3rem; }
+  td.mono, span.mono { font-family: ui-monospace, monospace; font-size: .72rem; color: var(--dim); }
+  progress { width: 100%; height: 8px; }
+  #chrome-warning { border-color: var(--err); }
+  dialog {
+    background: var(--panel); color: var(--text);
+    border: 1px solid var(--err); border-radius: 8px;
+    padding: 1rem 1.2rem; max-width: 34rem;
+    font: 14px/1.45 system-ui, sans-serif;
+  }
+  dialog::backdrop { background: rgba(0, 0, 0, .55); }
+  dialog h2 { color: var(--err); margin-bottom: .6rem; }
+  dialog .mono { display: block; margin: .15rem 0; word-break: break-all; }
+  dialog form { margin: .9rem 0 0; text-align: right; }
+</style>
+<script>
+  // Theme init before first paint: saved choice, else the OS preference.
+  (function () {
+    let t = null;
+    try { t = localStorage.getItem('theme'); } catch (e) { /* private mode */ }
+    document.documentElement.dataset.theme = (t === 'light') ? 'light' : 'dark';
+  })();
+</script>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <img id="logo" src="logo.svg" alt="Rollin' Llama">
+      <div class="tag">Firmware &amp; ROM flasher</div>
+    </div>
+    <div class="theme-switch">
+      <button type="button" data-set-theme="dark" title="Dark mode">☾</button>
+      <button type="button" data-set-theme="light" title="Light mode">☀</button>
+    </div>
+  </header>
+
+  <p>
+    Flash firmware releases and upload your own ROM dumps to the Rollin'
+    Llama wavetable board — entirely in the browser. ROM files are verified
+    and converted locally; nothing is uploaded anywhere.
+  </p>
+
+  <section id="chrome-warning" class="hidden">
+    This page needs WebMIDI and WebUSB — use Chrome or a Chromium-based
+    browser.
+  </section>
+
+  <section id="connect">
+    <h2>1 · Connect</h2>
+    <button id="btn-bootsel">Put board in BOOTSEL mode</button>
+    <button id="btn-connect" disabled>Connect to board</button>
+    <div class="status" id="connect-status">
+      Plug the board in over USB, then press the button.
+    </div>
+    <p class="tag hidden" id="win-note">
+      On Windows, the browser needs a one-time driver step before it can talk
+      to the board — <a href="#" id="win-help">how to set that up</a>.
+    </p>
+  </section>
+
+  <section id="firmware" class="hidden">
+    <h2>2 · Firmware</h2>
+    <div>Currently installed: <span id="fw-version" class="mono">reading…</span></div>
+    <p>
+      <button id="btn-flash-fw">Flash firmware (.uf2)</button>
+      <input type="file" id="fw-file" accept=".uf2" class="hidden">
+    </p>
+    <progress id="fw-progress" value="0" max="100" class="hidden"></progress>
+    <div class="status" id="fw-status"></div>
+  </section>
+
+  <section id="roms" class="hidden">
+    <h2>3 · ROMs</h2>
+    <p class="tag">
+      Supply dumps from your own units. Each file is checked against the
+      reference SHA-1 before anything is written.
+    </p>
+    <div id="rom-list"></div>
+    <input type="file" id="rom-file" class="hidden">
+    <div class="status" id="rom-status"></div>
+  </section>
+
+  <section id="settings" class="hidden">
+    <h2>4 · Settings</h2>
+    <p class="tag">
+      Which USB interfaces the board presents. Changes take effect on the
+      next boot.
+    </p>
+    <label class="opt"><input type="checkbox" id="set-vendor">
+      USB Audio Capture Interface <span class="tag">(bit-exact stream for
+      capturing and debugging)</span></label>
+    <label class="opt"><input type="checkbox" id="set-audio">
+      USB Audio Interface <span class="tag">(48 kHz resampled audio for
+      listening on a computer)</span></label>
+    <p><button id="btn-save-settings" disabled>Save settings</button></p>
+    <div class="status" id="settings-status"></div>
+  </section>
+
+  <section>
+    <h2>Releases</h2>
+    <p>
+      Firmware releases live on the
+      <a href="https://github.com/eivindbohler/rollin-llama/releases">GitHub
+      releases page</a>. Download a <code>.uf2</code> there, then flash it
+      above.
+    </p>
+  </section>
+  <footer>Copyright &copy; 2026, Eivind B&oslash;hler</footer>
+</main>
+<dialog id="rom-error">
+  <h2 id="rom-error-title">File not accepted</h2>
+  <div id="rom-error-msg"></div>
+  <form method="dialog"><button>OK</button></form>
+</dialog>
+<script>
+  (function () {
+    const btns = document.querySelectorAll('[data-set-theme]');
+    const logo = document.getElementById('logo');
+    function apply(t) {
+      document.documentElement.dataset.theme = t;
+      logo.src = t === 'light' ? 'logo-black.svg' : 'logo.svg';
+      btns.forEach(b => b.classList.toggle('active', b.dataset.setTheme === t));
+    }
+    apply(document.documentElement.dataset.theme);
+    btns.forEach(b => b.addEventListener('click', () => {
+      try { localStorage.setItem('theme', b.dataset.setTheme); } catch (e) { /* private mode */ }
+      apply(b.dataset.setTheme);
+    }));
+  })();
+</script>
+<script type="module" src="app.js"></script>
+</body>
+</html>
