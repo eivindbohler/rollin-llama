@@ -15,6 +15,7 @@ import { SETTINGS_OFF, RECORD_LEN, FLAG_USB_VENDOR, FLAG_USB_AUDIO, FLAG_ANALOG_
          VOLUME_MAX, decodeSettings, encodeSettings } from './settings.js';
 import { readBoardRev, minHwFromVerBlk, revText } from './boardrev.js';
 import { hashPersona, blockErase, ledPulse, forgetStubs } from './stubs.js';
+import { zipFiles } from './zip.js';
 
 const VER_BLK_OFF = 0x020300;      // RLVR: magic + fmt + ver[32] git[24] date[16] (+ min board rev, fmt 2)
 const VER_BLK_LEN = 0x58;
@@ -195,6 +196,7 @@ $('btn-connect').addEventListener('click', async () => {
     $('btn-connect').disabled = true;
     $('btn-bootsel').textContent = 'Put board in MIDI mode';
     $('btn-bootsel').disabled = false;
+    resetRomCards();
     $('firmware').classList.remove('hidden');
     $('roms').classList.remove('hidden');
     $('settings').classList.remove('hidden');
@@ -278,6 +280,8 @@ navigator.usb?.addEventListener('disconnect', e => {
   $('fw-progress').classList.add('hidden');
   verifyBar.hide();
   $('btn-flash-fw').disabled = false;
+  $('btn-erase-roms').disabled = true;
+  $('btn-zip').disabled = true;
   $('btn-bootsel').textContent = 'Put board in BOOTSEL mode';
   $('btn-bootsel').disabled = false;
   $('btn-connect').disabled = true;
@@ -680,6 +684,23 @@ $('fw-file').addEventListener('change', async e => {
   }
 });
 
+// ---- Footer: which commit this copy of the flasher is ------------------------
+// build.json carries Jekyll front matter; the GitHub Pages build fills in the
+// SHA of the commit it deployed (jekyll-github-metadata's build_revision) and
+// the build time. A copy served from a plain checkout gets the raw file,
+// which is not JSON, so the footer stays quiet there.
+fetch('build.json', { cache: 'no-cache' }).then(r => r.json()).then(b => {
+  const sha = /^[0-9a-f]{40}$/.test(b.rev ?? '') ? b.rev : null;
+  if (!sha) return;
+  const el = $('build-info');
+  const a = document.createElement('a');
+  a.href = `https://github.com/eivindbohler/rollin-llama/commit/${sha}`;
+  a.textContent = sha.slice(0, 7);
+  a.title = `Deployed from commit ${sha}`;
+  el.append('Flasher build ', a);
+  if (b.built) el.append(` · ${b.built}`);
+}).catch(() => {});
+
 // ---- ROM section ------------------------------------------------------------
 let manifest = null, pushTable = null;
 
@@ -699,18 +720,13 @@ function personaRecord(id) {
   return manifest?.personas.find(pr => pr.name === id);
 }
 
-async function renderRomTable() {
+// The persona cards are static (reference table) and built once, at page
+// load, so the ROMs section never appears empty or collapses between a
+// (re)connect and the first verification — rebuilding them per connect made
+// the section blink out while the manifest was being read.
+function buildRomTable() {
   const list = $('rom-list');
   list.innerHTML = '';
-  try {
-    const mdv = await picoboot.read(FLASH_BASE + MANIFEST_OFF, 512);
-    manifest = parseManifest(mdv);
-    const pdv = await picoboot.read(FLASH_BASE + PUSH_TBL_OFF, 64);
-    pushTable = parsePushTable(pdv);
-  } catch (e) {
-    setStatus('rom-status', 'manifest read failed: ' + e.message, 'err');
-  }
-
   for (const p of PERSONAS) {
     const card = document.createElement('div');
     card.className = 'subcard';
@@ -725,20 +741,47 @@ async function renderRomTable() {
     }
     card.innerHTML =
       `<div class="phead"><b>${p.label} <span class="pver">(${p.version})</span></b>` +
-      `<span class="mono pstatus" data-persona-status="${p.id}">checking…</span></div>` +
+      `<span class="mono pstatus" data-persona-status="${p.id}"></span></div>` +
       `<table>${rows}</table>`;
     list.appendChild(card);
   }
   list.onclick = onRomListClick;
+}
+buildRomTable();
+
+// Back to "checking…" — done the moment the section is shown on connect,
+// so a reconnect never shows the previous session's dots.
+function resetRomCards() {
+  document.querySelectorAll('.dot').forEach(d => d.className = 'dot');
+  document.querySelectorAll('[data-persona-status]').forEach(el => {
+    el.textContent = 'checking…'; el.className = 'mono pstatus';
+  });
+}
+
+// On connect: read the manifest, verify.
+async function renderRomTable() {
+  try {
+    const mdv = await picoboot.read(FLASH_BASE + MANIFEST_OFF, 512);
+    manifest = parseManifest(mdv);
+    const pdv = await picoboot.read(FLASH_BASE + PUSH_TBL_OFF, 64);
+    pushTable = parsePushTable(pdv);
+  } catch (e) {
+    setStatus('rom-status', 'manifest read failed: ' + e.message, 'err');
+  }
   await verifyAll();
   setUploadsEnabled(true);
 }
 
 // Only one PICOBOOT conversation at a time: the upload buttons stay disabled
 // while the verify cascade or another upload holds the link.
+let batchUpload = false;     // a zip upload is running: uploadRom's own re-enable must not flicker the buttons
 function setUploadsEnabled(on) {
+  on = on && !batchUpload;
   document.querySelectorAll('button[data-upload]')
     .forEach(b => b.disabled = !on);
+  const haveManifest = (manifest?.personas ?? []).some(p => p.images.length);
+  $('btn-erase-roms').disabled = !on || !haveManifest;
+  $('btn-zip').disabled = !on || !haveManifest;
 }
 
 // Overall ROM-verification progress, next to the Connect button: the
@@ -798,15 +841,26 @@ async function verifyAll() {
   }
 }
 
-// How many of a persona's image extents are blank (start AND middle of the
-// extent all FF: real ROMs can begin with FF runs, an erased slot is FF
-// everywhere). Two 256-byte reads per extent.
-async function blankExtents(rec) {
+// How many of a persona's FILES are absent: a file counts as blank when the
+// start and the middle of each of its flash parts read all FF (real ROMs can
+// begin with FF runs, an erased slot is FF everywhere). Per file, not per
+// image extent: the SC-55 wave ROMs share one extent, and an extent probe
+// that saw two of three in place sent the whole-persona hash on a doomed
+// run after every upload of the second-to-last file ("verifying" twice).
+// A part no manifest image covers counts as present, so the read-back
+// reports it rather than "ROMs missing". Two 256-byte reads per part.
+async function blankFiles(id, rec) {
   let blank = 0;
-  for (const im of rec.images) {
-    const p0 = await readFlash(im.flashOff, 256);
-    const p1 = await readFlash((im.flashOff + (im.bytes >> 1)) & ~0xff, 256);
-    if (p0.every(b => b === 0xff) && p1.every(b => b === 0xff)) blank++;
+  for (const fp of Object.values(filePlan(id))) {
+    let allBlank = true;
+    for (const pt of fp.parts) {
+      const im = rec.images.find(im => im.hwAddr === pt.hw);
+      if (!im) { allBlank = false; break; }
+      const p0 = await readFlash(im.flashOff + pt.off, 256);
+      const p1 = await readFlash((im.flashOff + pt.off + (pt.len >> 1)) & ~0xff, 256);
+      if (!(p0.every(b => b === 0xff) && p1.every(b => b === 0xff))) { allBlank = false; break; }
+    }
+    if (allBlank) blank++;
   }
   return blank;
 }
@@ -824,14 +878,13 @@ async function verifyPersona(id, onFrac = () => {}) {
     files.forEach(r => dot(r.name).className = 'dot err');
     return;
   }
-  // Blank probe (start AND middle of each extent — real ROMs can begin with
-  // FF runs, an erased slot is FF everywhere). Every extent blank = nothing
-  // uploaded yet. SOME blank = a partial upload: the persona cannot hash,
-  // so skip the stub and read back per file, which shows WHICH ROMs are in
-  // place (a blank extent used to fail the whole persona as "missing", which
+  // Blank probe per file (blankFiles). Every file blank = nothing uploaded
+  // yet. SOME blank = a partial upload: the persona cannot hash, so skip
+  // the stub and read back per file, which shows WHICH ROMs are in place
+  // (a blank extent used to fail the whole persona as "missing", which
   // read as if the uploaded file had vanished).
-  const blank = await blankExtents(rec);
-  if (blank === rec.images.length) {
+  const blank = await blankFiles(id, rec);
+  if (blank === files.length) {
     el.textContent = 'ROMs missing — upload below';
     el.className = 'mono pstatus err';
     files.forEach(r => dot(r.name).className = 'dot err');
@@ -944,6 +997,159 @@ function showError(title, html) {
   $('rom-error').showModal();
 }
 
+// Erase every ROM on the board: one erase over the span of the manifest's
+// image extents (the data slots, contiguous; nothing but ROM data lives
+// there — firmware, bitstreams, manifest and settings all sit below it),
+// then the connect-time verification runs again and shows every persona as
+// "ROMs missing". The span starts and ends on slot boundaries, so the stub
+// erases it in 64 KB blocks: ~9 MB in about 20 s.
+$('btn-erase-roms').addEventListener('click', async () => {
+  if (!picoboot || linkBusy) return;
+  const [lo, hi0] = romDataRange();
+  const hi = (hi0 + SECTOR - 1) & ~(SECTOR - 1);
+  const present = [];
+  for (const p of PERSONAS) {
+    const dots = REFERENCE_ROMS.filter(r => r.set === p.set)
+      .map(r => document.querySelector(`[data-dot="${r.name}"]`)?.className ?? '');
+    if (dots.some(c => c.includes('ok'))) present.push(p.label);
+  }
+  const ok = await confirmDialog('Erase all ROMs?',
+    '<p>This erases <b>every ROM uploaded to the board</b>' +
+    (present.length ? ` (${present.map(escHtml).join(', ')})` : '') +
+    '. No persona will start until its ROMs are uploaded again.</p>' +
+    '<p>Firmware, the sound engines and your settings are kept.</p>',
+    'Erase all ROMs');
+  if (!ok) { setStatus('rom-status', 'Cancelled — nothing was erased.'); return; }
+  setUploadsEnabled(false);
+  linkBusy = true;
+  document.querySelectorAll('.dot').forEach(d => d.className = 'dot busy');
+  document.querySelectorAll('[data-persona-status]').forEach(el => { el.textContent = 'erasing…'; el.className = 'mono pstatus'; });
+  try {
+    await blockErase(picoboot, FLASH_BASE + lo, hi - lo,
+      f => setStatus('rom-status', `Erasing ROMs… ${Math.round(100 * f)}%`));
+    setStatus('rom-status', 'All ROMs erased.', 'ok');
+  } catch (err) {
+    if (picoboot)      // an unplug is already reported by the disconnect handler
+      setStatus('rom-status', 'Erase failed: ' + err.message +
+        ' — the ROM area may be partly erased; upload the ROMs again.', 'err');
+  } finally {
+    linkBusy = false;
+  }
+  if (!picoboot) return;
+  await verifyAll();               // re-reads the board: every persona "ROMs missing"
+  setUploadsEnabled(true);
+});
+
+// ROM pack: every file in a zip (one nested zip deep) whose size equals a
+// reference ROM's is hashed; SHA-1 matches are uploaded through the same
+// per-file path as the Upload… buttons, in page order, after a dialog that
+// lists what was found, what is already on the board and what is missing.
+$('btn-zip').addEventListener('click', () => {
+  if (!picoboot || linkBusy) return;
+  $('zip-file').value = '';
+  $('zip-file').click();
+});
+$('zip-file').addEventListener('change', async e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  if (linkBusy) {
+    showError('Board busy',
+      '<p>A read or write operation is in progress — wait for it to ' +
+      'finish before uploading ROMs.</p>');
+    return;
+  }
+  if (!picoboot || !manifest) {
+    showError('Not connected',
+      '<p>The board is not connected (or has no manifest yet — flash ' +
+      'firmware first). Nothing was written.</p>');
+    return;
+  }
+  const dotOk = name => (document.querySelector(`[data-dot="${name}"]`)?.className ?? '').includes('ok');
+  setUploadsEnabled(false);
+  setStatus('rom-status', `Reading ${f.name}…`);
+  const matches = new Map();       // reference name → { entry, data }
+  const skipped = [];
+  let scanned = 0;
+  try {
+    const files = await zipFiles(new Uint8Array(await f.arrayBuffer()));
+    const sizes = new Set(REFERENCE_ROMS.map(r => r.size));
+    for (const en of files) {
+      if (en.skip) { skipped.push(`${en.name} (${en.skip})`); continue; }
+      if (!sizes.has(en.size)) continue;
+      let data;
+      try { data = await en.data(); } catch (err) { skipped.push(`${en.name} (${err.message})`); continue; }
+      if (data.length !== en.size) continue;
+      scanned++;
+      setStatus('rom-status', `Reading ${f.name}… ${scanned} candidate file(s) hashed`);
+      const h = await sha1hex(data);
+      for (const r of REFERENCE_ROMS)
+        if (r.sha1 === h && !matches.has(r.name)) matches.set(r.name, { entry: en.name, data });
+    }
+  } catch (err) {
+    setStatus('rom-status', '');
+    setUploadsEnabled(true);
+    showError('Could not read the zip', `<p><b>${escHtml(f.name)}</b>: ${escHtml(err.message)}</p>`);
+    return;
+  }
+
+  // Review: per persona, what the zip supplies, what is already verified on
+  // the board (not rewritten) and what is still missing.
+  const todo = [];
+  let rows = '';
+  for (const p of PERSONAS) {
+    const refs = REFERENCE_ROMS.filter(r => r.set === p.set);
+    const up = refs.filter(r => matches.has(r.name) && !dotOk(r.name));
+    const have = refs.filter(r => matches.has(r.name) && dotOk(r.name));
+    const miss = refs.filter(r => !matches.has(r.name) && !dotOk(r.name));
+    todo.push(...up.map(r => r.name));
+    rows += `<li><b>${p.label}</b>: ` +
+      (up.length ? `upload ${up.map(r => r.label).join(', ')}` : '<span class="dim">nothing to upload</span>') +
+      (have.length ? `<span class="dim"> · already on the board: ${have.map(r => r.label).join(', ')}</span>` : '') +
+      (miss.length ? `<span class="dim"> · not in the zip: ${miss.map(r => r.label).join(', ')}</span>` : '') +
+      '</li>';
+  }
+  const skipNote = skipped.length
+    ? `<p class="tag">Skipped: ${skipped.map(escHtml).join('; ')}</p>` : '';
+  if (!todo.length) {
+    setStatus('rom-status', '');
+    setUploadsEnabled(true);
+    showError(matches.size ? 'Nothing to upload' : 'No ROMs found in the zip',
+      `<p><b>${escHtml(f.name)}</b>: ${matches.size} of ${REFERENCE_ROMS.length} reference ROMs matched` +
+      (matches.size ? ', all of them already on the board.' : ' — no file inside has a matching SHA-1.') +
+      `</p><ul class="found">${rows}</ul>${skipNote}`);
+    return;
+  }
+  const ok = await confirmDialog(`Upload ${todo.length} ROM${todo.length > 1 ? 's' : ''} from the zip?`,
+    `<p><b>${escHtml(f.name)}</b> holds ${matches.size} of the ${REFERENCE_ROMS.length} reference ROMs ` +
+    '(matched by SHA-1, file names do not matter).</p>' +
+    `<ul class="found">${rows}</ul>${skipNote}`,
+    `Upload ${todo.length} ROM${todo.length > 1 ? 's' : ''}`);
+  if (!ok) { setStatus('rom-status', 'Cancelled — nothing was written.'); setUploadsEnabled(true); return; }
+
+  batchUpload = true;
+  let done = 0, failed = [];
+  try {
+    for (const name of todo) {
+      if (!picoboot) break;
+      const r = REFERENCE_ROMS.find(x => x.name === name);
+      const p = PERSONAS.find(pp => pp.set === r.set);
+      setStatus('rom-status', `Uploading ${done + failed.length + 1}/${todo.length}: ${p.label} ${r.label}…`);
+      const m = matches.get(name);
+      await uploadRom(name, new File([m.data], `${f.name}/${m.entry}`));
+      if (dotOk(name)) done++; else failed.push(`${p.label} ${r.label}`);
+    }
+  } finally {
+    batchUpload = false;
+    setUploadsEnabled(true);
+  }
+  if (!picoboot) return;
+  if (failed.length)
+    setStatus('rom-status', `${done}/${todo.length} ROMs uploaded from ${f.name}; failed: ${failed.join(', ')}.`, 'err');
+  else
+    setStatus('rom-status', `${done} ROM${done > 1 ? 's' : ''} uploaded from ${f.name}.`, 'ok');
+});
+
 // Modal yes/no; resolves true only on the confirming button (Esc = cancel).
 function confirmDialog(title, html, okLabel) {
   const dlg = $('confirm');
@@ -1032,10 +1238,10 @@ async function uploadRom(name, file) {
     let good = false, viaHash = false;
     const pidx = manifest.personas.indexOf(rec);
     const expect = pushTable && pidx >= 0 && pidx < pushTable.length ? pushTable[pidx] : null;
-    // The whole-persona hash can only match once every extent is in place;
+    // The whole-persona hash can only match once every file is in place;
     // with any still blank, go straight to this file's read-back (one
     // "verifying" pass, not a doomed hash followed by the read-back).
-    if (expect !== null && expect !== 0n && await blankExtents(rec) === 0) {
+    if (expect !== null && expect !== 0n && await blankFiles(p.id, rec) === 0) {
       try {
         good = (await hashPersona(picoboot, rec.images,
           f => say(`verifying… ${Math.round(100 * f)}%`))) === expect;

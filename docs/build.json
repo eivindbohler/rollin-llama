@@ -1,0 +1,3 @@
+---
+---
+{"rev": "{{ site.github.build_revision }}", "built": "{{ site.time | date: "%Y-%m-%d %H:%M UTC" }}"}

@@ -28,9 +28,11 @@
   header .tag { margin-top: .15rem; }
   main > p { margin: 1.4rem 0 2rem; }
   footer {
-    text-align: center; color: var(--dim); font-size: .78rem;
-    margin-top: 2.2rem;
+    display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+    color: var(--dim); font-size: .78rem; margin-top: 2.2rem;
   }
+  footer #build-info:empty + span { margin-left: auto; }
+  footer a { color: inherit; }
   h2 { font-size: 1rem; margin: 0 0 .5rem; }
   .tag { color: var(--dim); font-size: .82rem; }
   a { color: var(--accent); }
@@ -44,6 +46,13 @@
     font-weight: 600; cursor: pointer;
   }
   button:disabled { background: var(--btn-dis); color: var(--dim); cursor: default; }
+  button.danger:not(:disabled) { background: var(--err); color: #fff; }
+  #roms .rom-tools { display: flex; align-items: center; gap: .8rem; margin: .7rem 0 .2rem; }
+  #roms .rom-tools:first-of-type { margin-top: 1rem; }
+  #roms .rom-tools button { min-width: 10.5rem; flex: none; }
+  dialog ul.found { margin: .3rem 0 .6rem 1.2rem; padding: 0; }
+  dialog ul.found li { margin: .15rem 0; }
+  dialog ul.found .dim { color: var(--dim); }
   #connect button + button { margin-left: .5rem; }
   #firmware p { margin-top: 1.1rem; }
   #firmware .facts { display: grid; grid-template-columns: max-content 1fr; column-gap: .6rem; row-gap: .15rem; }
@@ -243,6 +252,18 @@
     <div id="rom-list"></div>
     <input type="file" id="rom-file" class="hidden">
     <div class="status" id="rom-status"></div>
+    <p class="rom-tools">
+      <button id="btn-zip" disabled>Upload from zip…</button>
+      <span class="tag">Pick a zip of ROM dumps: every file inside whose
+      SHA-1 matches a ROM above is uploaded, whatever it is called; the
+      rest is ignored.</span>
+    </p>
+    <p class="rom-tools">
+      <button id="btn-erase-roms" class="danger" disabled>Erase all ROMs…</button>
+      <span class="tag">Wipes every uploaded ROM from the board. Firmware
+      and settings are kept.</span>
+    </p>
+    <input type="file" id="zip-file" accept=".zip,application/zip" class="hidden">
   </section>
 
   <section id="settings" class="hidden">
@@ -271,7 +292,10 @@
       above.
     </p>
   </section>
-  <footer>Copyright &copy; 2026, Eivind B&oslash;hler</footer>
+  <footer>
+    <span id="build-info" class="mono"></span>
+    <span>Copyright &copy; 2026, Eivind B&oslash;hler</span>
+  </footer>
 </main>
 <dialog id="rom-error">
   <h2 id="rom-error-title">File not accepted</h2>

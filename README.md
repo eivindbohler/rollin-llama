@@ -64,6 +64,9 @@ Use the **[web flasher](https://eivindbohler.github.io/rollin-llama/)**
 2. Open the flasher, put the board in BOOTSEL mode, connect.
 3. Flash the release, then upload your ROM dumps. They are verified and
    converted entirely in your browser; no ROM data leaves your machine.
+   *Upload from zip…* takes a zip of dumps and uploads every file inside
+   whose SHA-1 matches, whatever it is named; *Erase all ROMs…* wipes them
+   from the board again (after a confirmation); firmware and settings stay.
 4. Optional: the *Volume* section (shown while the board is in normal MIDI
    mode) sets the headphone/line-out level live; the board stores it a few
    seconds after the last change and restores it on power-up.
