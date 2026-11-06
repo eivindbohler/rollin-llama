@@ -4,7 +4,7 @@
 //   W25Q128JV  EF 40 18  -> rev 1.0 (SDRAM board)
 //   W25Q256JV  EF 40 19  -> rev 1.1 (PSRAM board, 32 MB flash)
 // An image says which revision it needs in its RLVR block (fmt 2, minimum
-// board rev at +0x50, written by rl_mkflash.py --min-hw); flashing a newer
+// board rev at +0x50, written when the image is built); flashing a newer
 // image onto an older board is refused before anything is written. The
 // firmware makes the same check at boot (STATUS_HW_MISMATCH), so drag-drop
 // UF2s are covered too.

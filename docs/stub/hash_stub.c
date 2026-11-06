@@ -1,6 +1,6 @@
 // Persona push-hash stub (BOOTSEL / PICOBOOT EXEC): computes, on the board,
-// the hash rl_bulk_rx accumulates over a persona's push — the same value
-// rl_mkflash.py stores in the RLPH table and the firmware checks at every
+// the hash the FPGA accumulates over a persona's push — the same value the
+// image stores in the RLPH table and the firmware checks at every
 // boot — so the flasher can verify a persona's ROM data without reading it
 // back over USB (8.85 MB at ~0.5 MB/s = 17 s).
 //

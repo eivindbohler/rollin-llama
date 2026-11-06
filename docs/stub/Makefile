@@ -1,12 +1,12 @@
 # Builds the flasher's EXEC stubs and prints the hex to paste into the
-# JavaScript (jedec -> ../boardrev.js, hash/erase -> ../stubs.js). Needs an
+# JavaScript (jedec -> ../boardrev.js, hash/erase/led/flash4 -> ../stubs.js). Needs an
 # arm-none-eabi toolchain on PATH (xpack GCC 14 was used). `make check`
 # proves each .o has no unresolved references (a libgcc helper call would
 # objcopy into garbage) and runs the hash core on the host against the
-# python reference.
+# reference formula.
 CC = arm-none-eabi-gcc
 CFLAGS = -mcpu=cortex-m0plus -mthumb -Os -ffreestanding -nostdlib -fno-builtin -fomit-frame-pointer
-STUBS = jedec_stub hash_stub erase_stub led_stub
+STUBS = jedec_stub hash_stub erase_stub led_stub flash4_stub
 all: $(STUBS:=.bin)
 	@for s in $(STUBS); do echo "$$s: $$(xxd -p $$s.bin | tr -d '\n')"; done
 %.o: %.c rl_stub.h

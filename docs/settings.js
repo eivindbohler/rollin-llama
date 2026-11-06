@@ -1,5 +1,5 @@
-// Persistent card settings — the firmware's settings sector (fw/rp2040/core/
-// settings.c), one record at the start of its own 4 KB sector.
+// Persistent card settings — the firmware's settings sector, one record at
+// the start of its own 4 KB sector.
 // Version 2 (24 bytes):
 //   u32 magic "RLST" | u32 version (2) | u32 flags | char last_persona[8] |
 //   u8 volume (0..127) | u8 pad | u16 CRC-16/CCITT-FALSE over bytes 0..21

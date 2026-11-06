@@ -1,5 +1,5 @@
 // Host check of hash_stub's 32-bit-halves arithmetic against the reference
-// formula (fw_tests.c push_hash_ref_seq / rl_mkflash.py push_hash), on a
+// formula (the push hash the FPGA computes, one 64-bit step per halfword), on a
 // pseudo-random 1 MB buffer split into three images. Build: make check.
 #include <stdio.h>
 #include <stdint.h>

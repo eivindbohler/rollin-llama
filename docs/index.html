@@ -99,6 +99,13 @@
     background: var(--dot); margin-right: .55em; vertical-align: 8%;
   }
   .dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
+  .dot.half { background: linear-gradient(90deg, var(--ok) 50%, var(--err) 50%); }
+  /* added in this tab, not on the board yet (MU2000: written once all six are here) */
+  .dot.held { background: transparent; border: 2px solid var(--ok); }
+  .rnote { display: block; color: var(--dim); font-size: .7rem; margin: .1rem 0 0 1.15em; }
+  .subcard .pnote { color: var(--dim); font-size: .78rem; margin: .5rem .35rem .15rem; }
+  .subcard .pnote:empty { display: none; }
+  .subcard .pnote button { margin-left: .4rem; }
   .dot.busy {
     background: transparent;
     border: 2px solid var(--line); border-top-color: var(--accent);
@@ -326,6 +333,28 @@
     }));
   })();
 </script>
-<script type="module" src="app.js"></script>
+<script>
+  // Every module URL carries the deployed commit (build.json, filled in by GitHub
+  // Pages), so a visitor never mixes a fresh app.js with an older cached module
+  // (Pages caches ~10 min). The import map has to exist before the first module
+  // loads, hence app.js is started from here. No build.json (or a local server's
+  // unfilled placeholder): a per-load value, i.e. no module caching. A new
+  // module must be added to MODS.
+  (function () {
+    const MODS = ['roms.js', 'manifest.js', 'transforms.js', 'picoboot.js', 'settings.js', 'boardrev.js', 'stubs.js', 'gs2kpack.js', 'zip.js'];
+    const start = v => {
+      const im = document.createElement('script');
+      im.type = 'importmap';
+      im.textContent = JSON.stringify({ imports: Object.fromEntries(MODS.map(m => ['./' + m, './' + m + '?v=' + v])) });
+      document.head.appendChild(im);
+      const app = document.createElement('script');
+      app.type = 'module'; app.src = 'app.js?v=' + v;
+      document.body.appendChild(app);
+    };
+    fetch('build.json', { cache: 'no-store' }).then(r => r.json())
+      .then(b => start(/^[0-9a-f]{7,40}$/.test(b.rev || '') ? b.rev : Date.now().toString(36)))
+      .catch(() => start(Date.now().toString(36)));
+  })();
+</script>
 </body>
 </html>

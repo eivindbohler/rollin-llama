@@ -1,7 +1,6 @@
 // Inverse data transforms: reconstruct the ORIGINAL ROM-file bytes from the
 // derived images the board stores, so each file can be verified against its
 // reference SHA-1 (and, forward, so uploads can be derived in-browser).
-// Ports of tools/sc55mk1_mkmem.py / rl_mkflash.py / mt32_mkmem.py.
 
 // SC-55 wave-ROM address/data line permutation (identical for mk1 and mk2).
 const AA = [2, 0, 3, 4, 1, 9, 13, 10, 18, 17, 6, 15, 11, 16, 8, 5, 12, 7, 14, 19];
@@ -26,7 +25,7 @@ export function scrambleWave(desc) {
   for (let i = 0; i < desc.length; i++) out[permAddr(i)] = dInv[desc[i]];
   return out;
 }
-// original -> descrambled (what mkmem/mkflash do)
+// original -> descrambled (what the board stores)
 export function unscrambleWave(src) {
   const out = new Uint8Array(src.length);
   for (let i = 0; i < src.length; i++) out[i] = dFwd[src[permAddr(i)]];
@@ -87,7 +86,8 @@ export function extractOriginals(personaId, images) {
         out['sc55mk1_waverom2.bin'] = scrambleWave(slice(sdram, 0x100000, 0x200000));
         out['sc55mk1_waverom3.bin'] = scrambleWave(slice(sdram, 0x200000, 0x300000));
       }
-      if (byHw(0x280000)) out['sc55mk1_rom2.bin'] = byHw(0x280000);
+      if (byHw(0x280000)) out['sc55mk1_rom2.bin'] = byHw(0x280000);      // images before 2026-11
+      else if (sdram && sdram.length >= 0x340000) out['sc55mk1_rom2.bin'] = slice(sdram, 0x300000, 0x340000);
       if (byHw(0x700000)) out['sc55mk1_rom1.bin'] = byHw(0x700000);
       break;
     }
@@ -111,7 +111,11 @@ export function extractOriginals(personaId, images) {
 // the images, so file-granular reads still read every byte exactly once.
 //   parts: [{ hw, off, len }]  — image hwAddr + byte offset + length
 //   xform: 'raw' | 'unshuffle' | 'scramble'  (applied per part, concatenated)
-export function filePlan(personaId) {
+// `rec` (the persona's manifest record) picks between layouts where the
+// board's image says which one it has: the SC-55 mk1's ROM 2 was its own
+// image at hw 0x280000 until 2026-11 and now follows the waves in image 0
+// (same flash bytes either way).
+export function filePlan(personaId, rec = null) {
   switch (personaId) {
     case 'mt32': return {
       'MT32_CONTROL.ROM': { parts: [{ hw: 0x700000, off: 0, len: 65536 }], xform: 'raw' },
@@ -124,7 +128,9 @@ export function filePlan(personaId) {
     };
     case 'sc55mk1': return {
       'sc55mk1_rom1.bin':     { parts: [{ hw: 0x700000, off: 0, len: 32768 }], xform: 'raw' },
-      'sc55mk1_rom2.bin':     { parts: [{ hw: 0x280000, off: 0, len: 262144 }], xform: 'raw' },
+      'sc55mk1_rom2.bin':     { parts: [rec?.images.some(im => im.hwAddr === 0x280000)
+                                          ? { hw: 0x280000, off: 0, len: 262144 }
+                                          : { hw: 0x000000, off: 0x300000, len: 262144 }], xform: 'raw' },
       'sc55mk1_waverom1.bin': { parts: [{ hw: 0x000000, off: 0x000000, len: 0x100000 }], xform: 'scramble' },
       'sc55mk1_waverom2.bin': { parts: [{ hw: 0x000000, off: 0x100000, len: 0x100000 }], xform: 'scramble' },
       'sc55mk1_waverom3.bin': { parts: [{ hw: 0x000000, off: 0x200000, len: 0x100000 }], xform: 'scramble' },
@@ -136,6 +142,11 @@ export function filePlan(personaId) {
       'sc55mk2_waverom1.bin': { parts: [{ hw: 0x000000, off: 0x000000, len: 0x200000 }], xform: 'scramble' },
       'sc55mk2_waverom2.bin': { parts: [{ hw: 0x000000, off: 0x200000, len: 0x100000 }], xform: 'scramble' },
     };
+    // gs2k (MU2000): no per-file plan. Its six files are COMBINED by the
+    // converter (gs2kpack.js) into the sample data and the control tables,
+    // so no file maps to a byte range; app.js writes and verifies that
+    // persona as a whole.
+    case 'gs2k': return {};
   }
   return {};
 }

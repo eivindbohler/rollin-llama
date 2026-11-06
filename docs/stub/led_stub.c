@@ -1,8 +1,8 @@
 // BOOTSEL LED stub: makes the RGB LED pulse without any running code.
 //
 // The LED is common-anode on GP27 (B) / GP28 (R) / GP29 (G), lit when the
-// cathode is LOW; the firmware drives it with PWM, inverted polarity
-// (hal_pico.c). In BOOTSEL only the bootrom runs, so this stub configures
+// cathode is LOW; the firmware drives it with PWM, inverted polarity.
+// In BOOTSEL only the bootrom runs, so this stub configures
 // hardware that keeps going after it returns: PWM slice 6 (GP28 = 6A,
 // GP29 = 6B) at ~1 kHz, its CC register fed by DMA channel 10 from a
 // 1024-entry table of {green << 16 | red} levels that the flasher wrote to

@@ -6,20 +6,23 @@
 // firmware flash, ROM writes, settings — happens over PICOBOOT (WebUSB) once
 // the board re-enumerates as RPI-RP2.
 import { REFERENCE_ROMS, PERSONAS, sha1hex } from './roms.js';
-import { parseManifest, parsePushTable, pushHash,
-         MANIFEST_OFF, PUSH_TBL_OFF } from './manifest.js';
+import { parseManifest, parsePushTable, pushHash, pushedImages, hasUpper,
+         imageExtents, romEraseSpans, MANIFEST_OFF, PUSH_TBL_OFF, FWTAB_TBL_OFF, parseFwTables,
+         UPPER_BASE, FW_TABLE_HW } from './manifest.js';
 import { filePlan, applyXform, applyXformFwd } from './transforms.js';
 import { openPicoboot, parseUf2, flashUf2, ClaimBlockedError,
          FLASH_BASE, SECTOR, PAGE } from './picoboot.js';
 import { SETTINGS_OFF, RECORD_LEN, FLAG_USB_VENDOR, FLAG_USB_AUDIO, FLAG_ANALOG_MASK,
          VOLUME_MAX, decodeSettings, encodeSettings } from './settings.js';
 import { readBoardRev, minHwFromVerBlk, revText } from './boardrev.js';
-import { hashPersona, blockErase, ledPulse, forgetStubs } from './stubs.js';
+import { hashPersona, blockErase, ledPulse, forgetStubs,
+         flash4Reset, flash4Erase, flash4Write, flash4Read, flash4Hash } from './stubs.js';
+import { buildGs2kPack } from './gs2kpack.js';
 import { zipFiles } from './zip.js';
 
 const VER_BLK_OFF = 0x020300;      // RLVR: magic + fmt + ver[32] git[24] date[16] (+ min board rev, fmt 2)
 const VER_BLK_LEN = 0x58;
-// Firmware self-check trailer (fw/rp2040/core/fw_check.h): the firmware
+// Firmware self-check trailer: the firmware
 // carries magic + image length + CRC-32 and verifies itself at boot (red SOS
 // on the LED when it fails). The same CRC-32 (zlib / IEEE) is recomputed
 // here over the firmware slot, and over a UF2 before it is flashed.
@@ -66,18 +69,19 @@ function uf2Firmware(ranges) {
   const r = ranges.find(r => r.addr === FLASH_BASE);
   return r ? r.data.subarray(0, Math.min(r.data.length, FW_SLOT)) : null;
 }
-// Flash regions a release UF2 never touches: the ROM data slots and the
-// settings sector. A file that writes into either is the full recovery
-// image, which wipes the user's ROM uploads and settings.
-// ROM data range for the "this file erases your ROMs" check: taken from the
-// board's own manifest when one has been read (every persona's images lie in
-// the data slots), else the v6 map's slots. Uploads, verification and the
-// hash stub never use it — they go by the manifest records.
+// Flash regions a release UF2 never touches: the ROM data and the settings
+// sector. A file that writes into either is the full recovery image, which
+// wipes the user's ROM uploads and settings.
+// ROM data for the "this file erases your ROMs" check: the board's own
+// image extents when its manifest has been read, else the v6 map's data
+// slots. Image extents, not the span between the first and the last: map v8
+// keeps the gs2k bitstream (which every release UF2 writes) between ROM
+// images. Uploads, verification and the stubs never use this — they go by
+// the manifest records.
 const ROM_DATA_OFF_V6 = 0x430000, ROM_DATA_END_V6 = 0xC30000;
-function romDataRange() {
-  const offs = (manifest?.personas ?? []).flatMap(p => p.images.map(im => [im.flashOff, im.flashOff + im.bytes]));
-  if (!offs.length) return [ROM_DATA_OFF_V6, ROM_DATA_END_V6];
-  return [Math.min(...offs.map(r => r[0])), Math.max(...offs.map(r => r[1]))];
+function romExtents() {
+  const ext = imageExtents(manifest);
+  return ext.length ? ext : [[ROM_DATA_OFF_V6, ROM_DATA_END_V6]];
 }
 const VER_BLK_MAGIC = 0x52564c52;
 
@@ -192,6 +196,17 @@ $('btn-connect').addEventListener('click', async () => {
     });
     setStatus('connect-status', 'Connecting over PICOBOOT…');
     picoboot = await openPicoboot(dev);
+    // Before anything reads the flash: a session cut off in the middle of an
+    // upper-half access could have left the flash's upper-half addressing
+    // set, and every read below would then land 16 MB too high. The stub
+    // clears it (and every later upper-half access clears it again when it
+    // ends). forgetStubs first: the SRAM copy of whichever stub ran in an
+    // earlier session is gone after a reboot. A board with the 16 MB flash
+    // (rev 1.0) has no upper half and may refuse the command; that is
+    // harmless there and only reported on the 32 MB part.
+    forgetStubs();
+    let upperErr = null;
+    try { await flash4Reset(picoboot); } catch (err) { upperErr = err; }
     setStatus('connect-status', 'Connected (BOOTSEL / PICOBOOT).', 'ok');
     $('btn-connect').disabled = true;
     $('btn-bootsel').textContent = 'Put board in MIDI mode';
@@ -206,6 +221,14 @@ $('btn-connect').addEventListener('click', async () => {
     setStatus('rom-status', '');
     setStatus('settings-status', '');
     await showBoardRev();
+    if (upperErr) {
+      console.warn('upper-flash reset on connect: ' + upperErr.message);
+      if (boardRev.flash !== 'W25Q128')
+        setStatus('connect-status',
+          'Connected, but the board’s flash did not answer as expected — what ' +
+          'this page reads from it may be wrong. Unplug the board, put it back ' +
+          'in BOOTSEL mode and connect again.', 'err');
+    }
     await showVersion();
     await showSettings();
     renderRomTable();
@@ -605,10 +628,19 @@ $('fw-file').addEventListener('change', async e => {
     const ranges = parseUf2(await f.arrayBuffer());
     const total = ranges.reduce((a, r) => a + r.data.length, 0);
     const hits = (lo, hi) => ranges.some(r => r.addr < hi && r.addr + r.data.length > lo);
-    const [romLo, romHi] = romDataRange();
-    const wipesRoms = hits(FLASH_BASE + romLo, FLASH_BASE + romHi);
+    const wipesRoms = romExtents().some(([lo, hi]) => hits(FLASH_BASE + lo, FLASH_BASE + hi));
     const wipesSettings = hits(FLASH_BASE + SETTINGS_OFF, FLASH_BASE + SETTINGS_OFF + SECTOR);
     const esc = s => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+    // A UF2 reaches the first 16 MB only (the bootloader's 3-byte
+    // addresses); refuse anything else before a single sector is erased,
+    // rather than fail half way through.
+    if (ranges.some(r => r.addr < FLASH_BASE || r.addr + r.data.length > FLASH_BASE + UPPER_BASE)) {
+      showError('This file cannot be flashed',
+        `<p><b>${esc(f.name)}</b> writes outside the part of the flash a firmware ` +
+        'file can reach. Nothing was written. Use a release file.</p>');
+      setStatus('fw-status', 'Refused — the file writes outside the firmware area.', 'err');
+      return;
+    }
     // Board-revision gate: an image that needs a newer board than this one
     // is refused before anything is written. Firmware v1.1.0+ images need
     // the rev 1.1 (PSRAM) board; on a rev 1.0 board they would boot mute.
@@ -656,7 +688,7 @@ $('fw-file').addEventListener('change', async e => {
         'Flash the full image');
     } else {
       ok = await confirmDialog('Flash this firmware?',
-        `<p><b>${esc(f.name)}</b> updates the firmware and the four sound ` +
+        `<p><b>${esc(f.name)}</b> updates the firmware and the sound ` +
         'engines. Your uploaded ROMs and your settings are kept.</p>' + versions +
         '<p>The board reboots when the flash has been verified.</p>',
         'Flash');
@@ -702,23 +734,127 @@ fetch('build.json', { cache: 'no-cache' }).then(r => r.json()).then(b => {
 }).catch(() => {});
 
 // ---- ROM section ------------------------------------------------------------
-let manifest = null, pushTable = null;
+let manifest = null, pushTable = null, fwTables = null;
 
-async function readFlash(addr, size, progress) {
-  const out = new Uint8Array(size);
-  const CHUNK = 4096;
-  for (let o = 0; o < size; o += CHUNK) {
-    const n = Math.min(CHUNK, size - o);
-    const dv = await picoboot.read(FLASH_BASE + addr + o, n);
-    out.set(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength), o);
-    if (progress) progress((o + n) / size);
+// ---- flash access, routed by half --------------------------------------------
+// Offsets are flash offsets. The lower 16 MB goes through PICOBOOT and the
+// bootrom-based stubs as always; the upper 16 MB (UPPER_BASE and up, map
+// v8: the SC-55 mk2 waves + ROM 2 and the gs2k samples) only through the
+// flash4 stub — the bootrom path would silently wrap an upper offset onto
+// the firmware end of the chip. A range that straddles the boundary is
+// split. Every persona-data access below goes through these four.
+function byHalf(off, n) {
+  if (off >= UPPER_BASE || off + n <= UPPER_BASE) return [{ off, n, upper: off >= UPPER_BASE }];
+  return [{ off, n: UPPER_BASE - off, upper: false }, { off: UPPER_BASE, n: off + n - UPPER_BASE, upper: true }];
+}
+async function eachHalf(off, n, progress, fn) {
+  let done = 0;
+  for (const h of byHalf(off, n)) {
+    await fn(h, f => progress && progress((done + f * h.n) / n));
+    done += h.n;
   }
+}
+
+async function readFlash(off, size, progress) {
+  const out = new Uint8Array(size);
+  await eachHalf(off, size, progress, async (h, prog) => {
+    if (h.upper) { out.set(await flash4Read(picoboot, h.off, h.n, prog), h.off - off); return; }
+    const CHUNK = 4096;
+    for (let o = 0; o < h.n; o += CHUNK) {
+      const n = Math.min(CHUNK, h.n - o);
+      const dv = await picoboot.read(FLASH_BASE + h.off + o, n);
+      out.set(new Uint8Array(dv.buffer, dv.byteOffset, dv.byteLength), h.off - off + o);
+      prog((o + n) / h.n);
+    }
+  });
   return out;
+}
+
+// Erase [off, off + count): 4 KB aligned, like both stubs require.
+async function eraseFlash(off, count, progress) {
+  if ((off | count) % SECTOR) throw new Error('erase range not sector aligned');
+  await eachHalf(off, count, progress, (h, prog) => h.upper
+    ? flash4Erase(picoboot, h.off, h.n, prog)
+    : blockErase(picoboot, FLASH_BASE + h.off, h.n, prog));
+}
+
+// Program erased flash. Lower half in 4 KB PICOBOOT writes; the last one
+// is padded with FF to a whole 256-byte page (the bootrom programs pages,
+// and FF leaves erased flash as it is).
+async function writeFlash(off, data, progress) {
+  await eachHalf(off, data.length, progress, async (h, prog) => {
+    const part = data.subarray(h.off - off, h.off - off + h.n);
+    if (h.upper) { await flash4Write(picoboot, h.off, part, prog); return; }
+    for (let o = 0; o < h.n; o += SECTOR) {
+      let chunk = part.subarray(o, Math.min(o + SECTOR, h.n));
+      if (chunk.length % PAGE) {
+        const padded = new Uint8Array(chunk.length + PAGE - chunk.length % PAGE).fill(0xff);
+        padded.set(chunk);
+        chunk = padded;
+      }
+      await picoboot.write(FLASH_BASE + h.off + o, chunk);
+      prog(Math.min(o + SECTOR, h.n) / h.n);
+    }
+  });
+}
+
+// The board's push hash over [{ flashOff, bytes, hwAddr }]: the quad-XIP
+// hash stub when everything is in the lower half (fastest), the flash4
+// stub's when any image reaches the upper half (same value, any offset).
+function hashImages(images, progress) {
+  return hasUpper(images) ? flash4Hash(picoboot, images, progress)
+                          : hashPersona(picoboot, images, progress);
+}
+
+// Two 256-byte reads, start and middle: an erased region is FF everywhere,
+// real data (even data that begins with an FF run) is not.
+async function regionBlank(off, len) {
+  const p0 = await readFlash(off, 256);
+  const p1 = await readFlash((off + (len >> 1)) & ~0xff, 256);
+  return p0.every(b => b === 0xff) && p1.every(b => b === 0xff);
 }
 
 function personaRecord(id) {
   return manifest?.personas.find(pr => pr.name === id);
 }
+// The RLPH entry for a persona's record, or null when the image has none.
+function expectedHash(rec) {
+  const pidx = manifest ? manifest.personas.indexOf(rec) : -1;
+  return pushTable && pidx >= 0 && pidx < pushTable.length ? pushTable[pidx] : null;
+}
+
+// The CM-32L PCM ROM begins with the MT-32 PCM ROM: the board stores that
+// half once and both personas use it, so either upload fills it. Shown on
+// both rows; the CM-32L row also shows a half-filled dot when only that
+// half is there (SHARED_HALF).
+const ROW_NOTES = {
+  'MT32_PCM.ROM':  'Also the first half of the CM-32L PCM ROM — uploading either fills it.',
+  'CM32L_PCM.ROM': 'Its first half is the MT-32 PCM ROM, shared with the MT-32.',
+};
+const SHARED_HALF = { 'CM32L_PCM.ROM': { part: 0, sameAs: 'MT32_PCM.ROM' } };
+
+// MU2000 (persona gs2k): its six ROM files do not map one-to-one onto what
+// the board stores. The converter (gs2kpack.js) combines them into the
+// sample data (the pushed image, upper half in map v8) and the control
+// tables (the FW_TABLE_HW image the firmware reads in place, lower half).
+// So accepted files are held in memory for the session, the pack is built
+// and written once all six are here, and the persona is verified as a
+// whole: the samples by the board's push hash against the RLPH entry, the
+// control tables by read-back against their expected CRC-32 and length from
+// the image's table-hash block (RLFT; on an older image without it: against
+// the bytes built here, or non-blank and the "GS2K" magic). Since 2026-11-05 the
+// converter also builds the effects section (MEG2, raw program-ROM slices),
+// so the control tables are complete, reverb and chorus included.
+const GS2K = 'gs2k';
+const GS2K_MAGIC = [0x47, 0x53, 0x32, 0x4b];   // 'GS2K', ctl.bin byte 0
+const gs2kFiles = new Map();     // reference name -> Uint8Array, accepted this session
+let gs2kCtl = null;              // the control tables built (and written) this session
+let gs2kOk = false;              // the persona verified on the board
+let gs2kRetry = false;           // a full set is held but the board lacks it after a write or a check:
+                                 // only then the card offers "Write to board"
+const gs2kRoms = () => REFERENCE_ROMS.filter(r => r.set === GS2K);
+const gs2kAllHeld = () => gs2kRoms().every(r => gs2kFiles.has(r.name));
+let uploadsOn = false;           // mirrors setUploadsEnabled(), for the note's button
 
 // The persona cards are static (reference table) and built once, at page
 // load, so the ROMs section never appears empty or collapses between a
@@ -734,7 +870,8 @@ function buildRomTable() {
                '<th>Reference SHA-1</th><th></th></tr>';
     for (const r of REFERENCE_ROMS.filter(r => r.set === p.set)) {
       rows +=
-        `<tr><td><span class="dot" data-dot="${r.name}"></span>${r.label}</td>` +
+        `<tr><td><span class="dot" data-dot="${r.name}"></span>${r.label}` +
+        (ROW_NOTES[r.name] ? `<span class="rnote">${ROW_NOTES[r.name]}</span>` : '') + `</td>` +
         `<td class="mono">${r.size.toLocaleString()}</td>` +
         `<td class="mono">${r.sha1}</td>` +
         `<td><button data-upload="${r.name}" disabled>Upload…</button></td></tr>`;
@@ -742,10 +879,12 @@ function buildRomTable() {
     card.innerHTML =
       `<div class="phead"><b>${p.label} <span class="pver">(${p.version})</span></b>` +
       `<span class="mono pstatus" data-persona-status="${p.id}"></span></div>` +
-      `<table>${rows}</table>`;
+      `<table>${rows}</table>` +
+      (p.id === GS2K ? `<div class="pnote" data-persona-note="${p.id}"></div>` : '');
     list.appendChild(card);
   }
   list.onclick = onRomListClick;
+  renderGs2kNote();
 }
 buildRomTable();
 
@@ -765,8 +904,9 @@ async function renderRomTable() {
     manifest = parseManifest(mdv);
     const pdv = await picoboot.read(FLASH_BASE + PUSH_TBL_OFF, 64);
     pushTable = parsePushTable(pdv);
+    fwTables = parseFwTables(await picoboot.read(FLASH_BASE + FWTAB_TBL_OFF, 64));
   } catch (e) {
-    setStatus('rom-status', 'manifest read failed: ' + e.message, 'err');
+    setStatus('rom-status', 'could not read the board’s ROM layout: ' + e.message, 'err');
   }
   await verifyAll();
   setUploadsEnabled(true);
@@ -777,8 +917,10 @@ async function renderRomTable() {
 let batchUpload = false;     // a zip upload is running: uploadRom's own re-enable must not flicker the buttons
 function setUploadsEnabled(on) {
   on = on && !batchUpload;
+  uploadsOn = on;
   document.querySelectorAll('button[data-upload]')
     .forEach(b => b.disabled = !on);
+  renderGs2kNote();              // "Write to board" is shown only while it can be used
   const haveManifest = (manifest?.personas ?? []).some(p => p.images.length);
   $('btn-erase-roms').disabled = !on || !haveManifest;
   $('btn-zip').disabled = !on || !haveManifest;
@@ -803,6 +945,7 @@ const verifyBar = {
   hide() { $('verify-wrap').classList.add('hidden'); },
 };
 function personaBytes(id) {
+  if (id === GS2K) return (personaRecord(id)?.images ?? []).reduce((a, im) => a + im.bytes, 0);
   const plan = filePlan(id);
   return Object.values(plan).reduce((a, f) => a + f.parts.reduce((b, pt) => b + pt.len, 0), 0);
 }
@@ -851,14 +994,11 @@ async function verifyAll() {
 // reports it rather than "ROMs missing". Two 256-byte reads per part.
 async function blankFiles(id, rec) {
   let blank = 0;
-  for (const fp of Object.values(filePlan(id))) {
+  for (const fp of Object.values(filePlan(id, rec))) {
     let allBlank = true;
     for (const pt of fp.parts) {
       const im = rec.images.find(im => im.hwAddr === pt.hw);
-      if (!im) { allBlank = false; break; }
-      const p0 = await readFlash(im.flashOff + pt.off, 256);
-      const p1 = await readFlash((im.flashOff + pt.off + (pt.len >> 1)) & ~0xff, 256);
-      if (!(p0.every(b => b === 0xff) && p1.every(b => b === 0xff))) { allBlank = false; break; }
+      if (!im || !await regionBlank(im.flashOff + pt.off, pt.len)) { allBlank = false; break; }
     }
     if (allBlank) blank++;
   }
@@ -872,8 +1012,9 @@ async function verifyPersona(id, onFrac = () => {}) {
   const p = PERSONAS.find(p => p.id === id);
   const files = REFERENCE_ROMS.filter(r => r.set === p.set);
   const rec = personaRecord(id);
+  if (id === GS2K) return verifyGs2k(rec, onFrac);
   if (!rec || !rec.images.length) {
-    el.textContent = 'no manifest entry';
+    el.textContent = 'not supported by the installed firmware';
     el.className = 'mono pstatus err';
     files.forEach(r => dot(r.name).className = 'dot err');
     return;
@@ -895,16 +1036,16 @@ async function verifyPersona(id, onFrac = () => {}) {
   // firmware's own boot-time check, ~1 s per persona instead of a USB
   // read-back. A match proves every file at once; a mismatch (or an image
   // without the table) falls through to the file-granular read-back, which
-  // says WHICH file is wrong.
-  const pidx = manifest.personas.indexOf(rec);
-  const expect = pushTable && pidx >= 0 && pidx < pushTable.length ? pushTable[pidx] : null;
+  // says WHICH file is wrong. A persona with data in the upper half is
+  // hashed by the flash4 stub (hashImages).
+  const expect = expectedHash(rec);
   if (blank === 0 && expect !== null && expect !== 0n) {
     files.forEach(r => dot(r.name).className = 'dot busy');
     el.textContent = 'verifying…';
     await new Promise(res => setTimeout(res));
     let got = null;
     try {
-      got = await hashPersona(picoboot, rec.images, f => {
+      got = await hashImages(pushedImages(rec), f => {
         el.textContent = `verifying… ${Math.round(100 * f)}%`;
         onFrac(f);
       });
@@ -921,7 +1062,7 @@ async function verifyPersona(id, onFrac = () => {}) {
   // backing byte ranges are read (files partition the images, so every byte
   // is still read exactly once), reconstructed and hashed — one spinner at
   // a time, one flip per ROM.
-  const plan = filePlan(id);
+  const plan = filePlan(id, rec);
   const grand = files.reduce((a, r) =>
     a + plan[r.name].parts.reduce((b, pt) => b + pt.len, 0), 0);
   let done = 0, ok = 0;
@@ -935,8 +1076,10 @@ async function verifyPersona(id, onFrac = () => {}) {
       onFrac((done + f * len) / grand);
     });
     done += len;
-    dot(r.name).className = 'dot ' + (good ? 'ok' : 'err');
-    if (good) ok++;
+    dot(r.name).className = 'dot ' + (good === true ? 'ok' : good === 'half' ? 'half' : 'err');
+    dot(r.name).title = good === 'half'
+      ? 'First half in place (shared with the MT-32 PCM ROM). Upload this ROM for the rest.' : '';
+    if (good === true) ok++;
   }
   const all = ok === files.length;
   el.textContent = all ? '' : `${ok}/${files.length} verified`;
@@ -945,7 +1088,8 @@ async function verifyPersona(id, onFrac = () => {}) {
 
 // Read one ROM's backing flash ranges, reconstruct the original file bytes
 // via the inverse transform, and check size + SHA-1. `onFrac` gets 0..1 of
-// this file's read progress.
+// this file's read progress. Returns true, false, or 'half' for a file
+// whose shared part (SHARED_HALF) is in place and the rest is not.
 async function readAndCheckFile(rec, r, plan, onFrac) {
   const chunks = [];
   const total = plan.parts.reduce((a, pt) => a + pt.len, 0);
@@ -964,18 +1108,45 @@ async function readAndCheckFile(rec, r, plan, onFrac) {
     let o = 0;
     for (const c of chunks) { data.set(c, o); o += c.length; }
   }
-  return data.length === r.size && await sha1hex(data) === r.sha1;
+  if (data.length === r.size && await sha1hex(data) === r.sha1) return true;
+  const sh = SHARED_HALF[r.name];
+  const ref = sh && REFERENCE_ROMS.find(x => x.name === sh.sameAs);
+  if (ref && chunks[sh.part]?.length === ref.size && await sha1hex(chunks[sh.part]) === ref.sha1)
+    return 'half';
+  return false;
+}
+
+// True when the flash already holds exactly these bytes for this part, so
+// the upload can leave it alone: the CM-32L PCM ROM's first half IS the
+// MT-32 PCM ROM (one copy, shared), so whichever of the two came first, the
+// other writes only what is missing, and a re-upload writes nothing. A
+// blank probe first (two 256-byte reads, as blankFiles), then the board
+// hashes the range itself (hash stub, or the flash4 stub's in the upper
+// half) against the same hash of the bytes we would write. Any doubt (stub
+// error) = not in place = write it.
+async function partInPlace(im, pt, bytes) {
+  if (await regionBlank(im.flashOff + pt.off, pt.len)) return false;
+  const hw = pt.hw + (pt.off >> 1);
+  try {
+    const got = await hashImages([{ flashOff: im.flashOff + pt.off, bytes: pt.len, hwAddr: hw }]);
+    return got === pushHash([{ hwAddr: hw, data: bytes }]);
+  } catch (e) {
+    console.warn(`hash stub: ${e.message}; writing the part`);
+    return false;
+  }
 }
 
 // ---- upload flow ------------------------------------------------------------
 // The push-hash table (RLPH) baked into the manifest describes the reference
 // dumps; a different dump would fail the boot-time push check (red LED). So
-// unlike the dev-repo tools, this flasher REFUSES non-reference files.
+// this flasher REFUSES non-reference files.
 let pendingUpload = null;
 
 function onRomListClick(e) {
+  if (!picoboot) return;
+  if (e.target.dataset?.gs2kWrite !== undefined) return writeGs2k();   // the MU2000 card's "Write to board"
   const name = e.target.dataset?.upload;
-  if (!name || !picoboot) return;
+  if (!name) return;
   pendingUpload = name;
   $('rom-file').value = '';
   $('rom-file').click();
@@ -997,16 +1168,21 @@ function showError(title, html) {
   $('rom-error').showModal();
 }
 
-// Erase every ROM on the board: one erase over the span of the manifest's
-// image extents (the data slots, contiguous; nothing but ROM data lives
-// there — firmware, bitstreams, manifest and settings all sit below it),
-// then the connect-time verification runs again and shows every persona as
-// "ROMs missing". The span starts and ends on slot boundaries, so the stub
-// erases it in 64 KB blocks: ~9 MB in about 20 s.
+// Erase every ROM on the board: per flash half, the span of the manifest's
+// image extents with the bitstreams cut out (romEraseSpans — map v8 keeps
+// the gs2k bitstream between ROM images; firmware, manifest and settings
+// sit below every span), the lower half through the block-erase stub, the
+// upper half through the flash4 stub. Then the connect-time verification
+// runs again and shows every persona as "ROMs missing". Spans start and
+// end on slot boundaries, so both stubs erase in 64 KB blocks.
 $('btn-erase-roms').addEventListener('click', async () => {
   if (!picoboot || linkBusy) return;
-  const [lo, hi0] = romDataRange();
-  const hi = (hi0 + SECTOR - 1) & ~(SECTOR - 1);
+  let spans;
+  try { spans = romEraseSpans(manifest); } catch (err) {
+    showError('Nothing was erased', `<p>The ROM areas on this board could not be told apart from the rest: ${escHtml(err.message)}.</p>`);
+    return;
+  }
+  const total = spans.reduce((a, [lo, hi]) => a + hi - lo, 0);
   const present = [];
   for (const p of PERSONAS) {
     const dots = REFERENCE_ROMS.filter(r => r.set === p.set)
@@ -1025,8 +1201,14 @@ $('btn-erase-roms').addEventListener('click', async () => {
   document.querySelectorAll('.dot').forEach(d => d.className = 'dot busy');
   document.querySelectorAll('[data-persona-status]').forEach(el => { el.textContent = 'erasing…'; el.className = 'mono pstatus'; });
   try {
-    await blockErase(picoboot, FLASH_BASE + lo, hi - lo,
-      f => setStatus('rom-status', `Erasing ROMs… ${Math.round(100 * f)}%`));
+    let done = 0;
+    for (const [lo, hi] of spans) {
+      await eraseFlash(lo, hi - lo,
+        f => setStatus('rom-status', `Erasing ROMs… ${Math.round(100 * (done + f * (hi - lo)) / total)}%`));
+      done += hi - lo;
+    }
+    gs2kOk = false;
+    gs2kRetry = gs2kAllHeld();
     setStatus('rom-status', 'All ROMs erased.', 'ok');
   } catch (err) {
     if (picoboot)      // an unplug is already reported by the disconnect handler
@@ -1061,7 +1243,7 @@ $('zip-file').addEventListener('change', async e => {
   }
   if (!picoboot || !manifest) {
     showError('Not connected',
-      '<p>The board is not connected (or has no manifest yet — flash ' +
+      '<p>The board is not connected (or has no firmware yet — flash ' +
       'firmware first). Nothing was written.</p>');
     return;
   }
@@ -1101,12 +1283,18 @@ $('zip-file').addEventListener('change', async e => {
     const refs = REFERENCE_ROMS.filter(r => r.set === p.set);
     const up = refs.filter(r => matches.has(r.name) && !dotOk(r.name));
     const have = refs.filter(r => matches.has(r.name) && dotOk(r.name));
-    const miss = refs.filter(r => !matches.has(r.name) && !dotOk(r.name));
+    // MU2000 ROMs added earlier in this tab are not missing: they are held
+    // for the combined write (gs2kFiles).
+    const earlier = refs.filter(r => !matches.has(r.name) && !dotOk(r.name) && gs2kFiles.has(r.name));
+    const miss = refs.filter(r => !matches.has(r.name) && !dotOk(r.name) && !gs2kFiles.has(r.name));
     todo.push(...up.map(r => r.name));
     rows += `<li><b>${p.label}</b>: ` +
       (up.length ? `upload ${up.map(r => r.label).join(', ')}` : '<span class="dim">nothing to upload</span>') +
       (have.length ? `<span class="dim"> · already on the board: ${have.map(r => r.label).join(', ')}</span>` : '') +
+      (earlier.length ? `<span class="dim"> · added earlier: ${earlier.map(r => r.label).join(', ')}</span>` : '') +
       (miss.length ? `<span class="dim"> · not in the zip: ${miss.map(r => r.label).join(', ')}</span>` : '') +
+      (p.id === GS2K && up.length && miss.length
+        ? '<span class="dim"> — the MU2000 ROMs are written together, once all six are here</span>' : '') +
       '</li>';
   }
   const skipNote = skipped.length
@@ -1128,26 +1316,47 @@ $('zip-file').addEventListener('change', async e => {
   if (!ok) { setStatus('rom-status', 'Cancelled — nothing was written.'); setUploadsEnabled(true); return; }
 
   batchUpload = true;
-  let done = 0, failed = [];
+  let done = 0, failed = [], held = 0;
+  const gsTodo = todo.filter(name => REFERENCE_ROMS.find(x => x.name === name).set === GS2K);
   try {
     for (const name of todo) {
       if (!picoboot) break;
       const r = REFERENCE_ROMS.find(x => x.name === name);
       const p = PERSONAS.find(pp => pp.set === r.set);
-      setStatus('rom-status', `Uploading ${done + failed.length + 1}/${todo.length}: ${p.label} ${r.label}…`);
       const m = matches.get(name);
+      // MU2000: matched by SHA-1 above; held here and written together below
+      if (r.set === GS2K) { holdGs2k(name, m.data); continue; }
+      setStatus('rom-status', `Uploading ${done + failed.length + 1}/${todo.length - gsTodo.length}: ${p.label} ${r.label}…`);
       await uploadRom(name, new File([m.data], `${f.name}/${m.entry}`));
       if (dotOk(name)) done++; else failed.push(`${p.label} ${r.label}`);
+    }
+    if (gsTodo.length && picoboot) {
+      if (!gs2kAllHeld()) held = gsTodo.length;
+      else {
+        setStatus('rom-status', 'Writing the MU2000 ROMs…');
+        await writeGs2k();
+        if (gs2kOk) done += gsTodo.length; else failed.push('MU2000');
+      }
     }
   } finally {
     batchUpload = false;
     setUploadsEnabled(true);
   }
   if (!picoboot) return;
+  // MU2000 ROMs held until the set is complete: say what is still needed
+  const heldNote = held
+    ? `${held} MU2000 ROM${held > 1 ? 's' : ''}${done || failed.length ? '' : ` from ${f.name}`} ` +
+      'kept in this browser tab — still needed: ' +
+      gs2kRoms().filter(r => !gs2kFiles.has(r.name)).map(r => r.label).join(', ') + '.'
+    : '';
   if (failed.length)
-    setStatus('rom-status', `${done}/${todo.length} ROMs uploaded from ${f.name}; failed: ${failed.join(', ')}.`, 'err');
+    setStatus('rom-status', `${done}/${todo.length - held} ROMs uploaded from ${f.name}; failed: ` +
+      `${failed.join(', ')}.${heldNote ? ' ' + heldNote : ''}`, 'err');
+  else if (!done && held)
+    setStatus('rom-status', heldNote);
   else
-    setStatus('rom-status', `${done} ROM${done > 1 ? 's' : ''} uploaded from ${f.name}.`, 'ok');
+    setStatus('rom-status', `${done} ROM${done !== 1 ? 's' : ''} uploaded from ${f.name}.` +
+      (heldNote ? ' ' + heldNote : ''), 'ok');
 });
 
 // Modal yes/no; resolves true only on the confirming button (Esc = cancel).
@@ -1163,9 +1372,23 @@ function confirmDialog(title, html, okLabel) {
   });
 }
 
+// The refusal for a file that is not the reference dump (size or SHA-1).
+async function refuseFile(file, r, p, data) {
+  showError('File not accepted',
+    `<p><b>${escHtml(file.name)}</b> is not the supported ${r.label} ` +
+    `dump for ${p.label}. The board's boot-time integrity check is ` +
+    `keyed to the reference dump, so a different one would fail to ` +
+    `boot. Nothing was written.</p>` +
+    `<span class="mono">expected: ${r.size.toLocaleString()} bytes, ` +
+    `SHA-1 ${r.sha1}</span>` +
+    `<span class="mono">got: &nbsp;&nbsp;&nbsp;&nbsp; ` +
+    `${data.length.toLocaleString()} bytes, SHA-1 ${await sha1hex(data)}</span>`);
+}
+
 async function uploadRom(name, file) {
   const r = REFERENCE_ROMS.find(x => x.name === name);
   const p = PERSONAS.find(pp => pp.set === r.set);
+  if (p.id === GS2K) return acceptGs2k(r, p, file);
   const el = document.querySelector(`[data-persona-status="${p.id}"]`);
   const dot = document.querySelector(`[data-dot="${name}"]`);
   const say = msg => { el.textContent = msg; el.className = 'mono pstatus'; };
@@ -1178,7 +1401,7 @@ async function uploadRom(name, file) {
   const rec = personaRecord(p.id);
   if (!picoboot || !rec) {
     showError('Not connected',
-      '<p>The board is not connected (or has no manifest yet — flash ' +
+      '<p>The board is not connected (or has no firmware yet — flash ' +
       'firmware first). Nothing was written.</p>');
     return;
   }
@@ -1190,43 +1413,36 @@ async function uploadRom(name, file) {
   try {
     const data = new Uint8Array(await file.arrayBuffer());
     if (data.length !== r.size || await sha1hex(data) !== r.sha1) {
-      showError('File not accepted',
-        `<p><b>${escHtml(file.name)}</b> is not the supported ${r.label} ` +
-        `dump for ${p.label}. The board's boot-time integrity check is ` +
-        `keyed to the reference dump, so a different one would fail to ` +
-        `boot. Nothing was written.</p>` +
-        `<span class="mono">expected: ${r.size.toLocaleString()} bytes, ` +
-        `SHA-1 ${r.sha1}</span>` +
-        `<span class="mono">got: &nbsp;&nbsp;&nbsp;&nbsp; ` +
-        `${data.length.toLocaleString()} bytes, SHA-1 ${await sha1hex(data)}</span>`);
+      await refuseFile(file, r, p, data);
       return;
     }
     dot.className = 'dot busy';
     await new Promise(res => setTimeout(res));   // paint the spinner
 
-    // Derive the on-board bytes and write each backing flash range.
-    const plan = filePlan(p.id)[name];
+    // Derive the on-board bytes and write each backing flash range — in
+    // whichever flash half it lies (eraseFlash / writeFlash route it).
+    const plan = filePlan(p.id, rec)[name];
     const derived = applyXformFwd(plan.xform, data);
     const total = plan.parts.reduce((a, pt) => a + pt.len, 0);
     let src = 0, done = 0;
     for (const pt of plan.parts) {
       const im = rec.images.find(im => im.hwAddr === pt.hw);
       if (!im || pt.off + pt.len > im.bytes)
-        throw new Error('manifest does not cover this ROM');
-      const base = FLASH_BASE + im.flashOff + pt.off;
+        throw new Error('the installed firmware has no place for this ROM');
+      const off = im.flashOff + pt.off;
       const part = derived.subarray(src, src + pt.len);
       src += pt.len;
-      // Block erase through the stub (stubs.js), 256K per EXEC so each ack
+      say('checking…');
+      if (await partInPlace(im, pt, part)) { done += pt.len; continue; }
+      // Block erase through a stub (stubs.js), 256K per EXEC so each ack
       // stays well under its timeout; file extents are 4K-aligned and never
       // share sectors.
       touched = true;
       say(`erasing… ${Math.round(100 * done / total)}%`);
-      await blockErase(picoboot, base, pt.len,
+      await eraseFlash(off, pt.len,
         f => say(`erasing… ${Math.round(100 * (done + f * pt.len) / total)}%`));
-      for (let o = 0; o < pt.len; o += 4096) {
-        await picoboot.write(base + o, part.subarray(o, Math.min(o + 4096, pt.len)));
-        say(`writing… ${Math.round(100 * (done + o + 4096) / total)}%`);
-      }
+      await writeFlash(off, part,
+        f => say(`writing… ${Math.round(100 * (done + f * pt.len) / total)}%`));
       done += pt.len;
     }
 
@@ -1236,22 +1452,21 @@ async function uploadRom(name, file) {
     // table-less image pays for the file read-back, which pinpoints.
     say('verifying…');
     let good = false, viaHash = false;
-    const pidx = manifest.personas.indexOf(rec);
-    const expect = pushTable && pidx >= 0 && pidx < pushTable.length ? pushTable[pidx] : null;
+    const expect = expectedHash(rec);
     // The whole-persona hash can only match once every file is in place;
     // with any still blank, go straight to this file's read-back (one
     // "verifying" pass, not a doomed hash followed by the read-back).
     if (expect !== null && expect !== 0n && await blankFiles(p.id, rec) === 0) {
       try {
-        good = (await hashPersona(picoboot, rec.images,
+        good = (await hashImages(pushedImages(rec),
           f => say(`verifying… ${Math.round(100 * f)}%`))) === expect;
         viaHash = good;        // only a MATCH proves the other files; a
                                // read-back below verifies this file alone
       } catch (e) { console.warn(`hash stub: ${e.message}; reading back instead`); }
     }
     if (!good)
-      good = await readAndCheckFile(rec, r, plan,
-        f => say(`verifying… ${Math.round(100 * f)}%`));
+      good = (await readAndCheckFile(rec, r, plan,
+        f => say(`verifying… ${Math.round(100 * f)}%`))) === true;
     if (good && viaHash)               // the whole persona verified at once
       REFERENCE_ROMS.filter(x => x.set === p.set).forEach(x =>
         { const d = document.querySelector(`[data-dot="${x.name}"]`); if (d) d.className = 'dot ok'; });
@@ -1272,5 +1487,257 @@ async function uploadRom(name, file) {
   } finally {
     linkBusy = false;
     setUploadsEnabled(true);
+  }
+}
+
+// ---- MU2000 (persona gs2k): collect, combine, write, verify -----------------
+// (state and the why: next to SHARED_HALF above)
+const roundUpSector = n => Math.ceil(n / SECTOR) * SECTOR;
+
+// The record's two kinds of image: the one pushed image (the samples) and
+// the control tables the firmware reads in place.
+function gs2kImages(rec) {
+  const pushed = rec ? pushedImages(rec) : [];
+  return { samples: pushed.length === 1 ? pushed[0] : null,
+           ctl: rec?.images.find(im => im.hwAddr === FW_TABLE_HW) ?? null };
+}
+
+// Dots: green when the persona verifies, a ring for a ROM added in this tab
+// but not on the board yet, red otherwise; state 'busy' spins all six.
+function showGs2kDots(state) {
+  for (const r of gs2kRoms()) {
+    const d = document.querySelector(`[data-dot="${r.name}"]`);
+    if (!d) continue;
+    const held = state !== 'ok' && state !== 'busy' && gs2kFiles.has(r.name);
+    d.className = 'dot ' + (state === 'ok' || state === 'busy' ? state : held ? 'held' : 'err');
+    d.title = held ? 'Added — kept in this browser tab and written together with the ' +
+                     'others once all six MU2000 ROMs are here.' : '';
+  }
+  renderGs2kNote();
+}
+
+// The line under the MU2000 card: what is still needed, or the button that
+// writes a complete set that is not on the board (after an erase, or after
+// a write that did not verify).
+function renderGs2kNote() {
+  const el = document.querySelector(`[data-persona-note="${GS2K}"]`);
+  if (!el) return;
+  const roms = gs2kRoms(), need = roms.filter(r => !gs2kFiles.has(r.name));
+  let html = '';
+  if (gs2kOk) html = '';
+  else if (!need.length)
+    html = gs2kRetry && uploadsOn
+      ? 'All six ROMs are here, kept in this browser tab. <button data-gs2k-write>Write to board</button>'
+      : '';                        // the automatic write is starting or running
+  else if (need.length === roms.length)
+    html = 'The six MU2000 ROMs are combined on this page and written to the board ' +
+           'together, once all six are here.';
+  else
+    html = `${roms.length - need.length} of ${roms.length} ROMs added — still needed: ` +
+           `${need.map(r => r.label).join(', ')}. The ones added so far are kept in ` +
+           'this browser tab; all six are written together.';
+  el.innerHTML = html;
+}
+
+function holdGs2k(name, data) {
+  gs2kFiles.set(name, data);
+  showGs2kDots(gs2kOk ? 'ok' : null);
+}
+
+// The control tables' expected CRC-32 and length (RLFT), or null on an image
+// without the table.
+function gs2kCtlExpect() {
+  const idx = manifest ? manifest.personas.findIndex(p => p.name === GS2K) : -1;
+  const e = idx >= 0 && fwTables ? fwTables[idx] : null;
+  return e && e.bytes ? e : null;
+}
+// The control tables in place: their CRC-32 and length against RLFT (and
+// `built`, the bytes built in this tab, must agree with it); on an image
+// without RLFT, byte-equal to `built` when given, else non-blank and
+// starting with the magic.
+async function gs2kCtlInPlace(im, built = gs2kCtl, progress) {
+  const exp = gs2kCtlExpect();
+  if (exp) {
+    // read back exactly the expected length and check its CRC: proves the
+    // tables in place whether or not this page built them
+    if (exp.bytes > im.bytes || (built && (built.length !== exp.bytes || crc32(built) !== exp.crc))) return false;
+    return crc32(await readFlash(im.flashOff, exp.bytes, progress)) === exp.crc;
+  }
+  if (built) {
+    if (built.length > im.bytes) return false;
+    const back = await readFlash(im.flashOff, built.length, progress);
+    for (let i = 0; i < built.length; i++) if (back[i] !== built[i]) return false;
+    return true;
+  }
+  const head = await readFlash(im.flashOff, 256);
+  return GS2K_MAGIC.every((c, i) => head[i] === c);
+}
+
+// Connect-time check (from verifyPersona). `onFrac` 0..1 as elsewhere.
+async function verifyGs2k(rec, onFrac = () => {}) {
+  const el = document.querySelector(`[data-persona-status="${GS2K}"]`);
+  const show = (text, err = false) => { el.textContent = text; el.className = 'mono pstatus' + (err ? ' err' : ''); };
+  const { samples, ctl } = gs2kImages(rec);
+  gs2kOk = false;
+  if (!samples || !ctl) {
+    show('not supported by the installed firmware', true);
+    showGs2kDots(null); onFrac(1);
+    return;
+  }
+  const blankS = await regionBlank(samples.flashOff, samples.bytes);
+  const blankC = await regionBlank(ctl.flashOff, ctl.bytes);
+  if (blankS && blankC) {
+    show('ROMs missing — upload below', true);
+    showGs2kDots(null); onFrac(1);
+    return;
+  }
+  showGs2kDots('busy'); show('verifying…');
+  await new Promise(res => setTimeout(res));
+  const expect = expectedHash(rec);
+  let good = false;
+  if (!blankS && !blankC && expect !== null && expect !== 0n) {
+    try {
+      good = await hashImages([samples], f => {
+        show(`verifying… ${Math.round(100 * f)}%`);
+        onFrac(f * samples.bytes / (samples.bytes + ctl.bytes));
+      }) === expect;
+    } catch (e) { console.warn(`hash stub (${GS2K}): ${e.message}`); }
+    if (good) good = await gs2kCtlInPlace(ctl);
+  }
+  gs2kOk = good;
+  gs2kRetry = !good && gs2kAllHeld();
+  showGs2kDots(good ? 'ok' : null);
+  show(good ? '' : blankS || blankC ? 'incomplete — upload below' : 'not verified — upload below', !good);
+  onFrac(1);
+}
+
+// A file from an Upload… button: checked like every ROM, then held; the
+// sixth one starts the write.
+async function acceptGs2k(r, p, file) {
+  if (linkBusy) {     // an operation started while the file picker was open
+    showError('Board busy',
+      '<p>A read or write operation is in progress — wait for it to ' +
+      'finish before uploading a ROM.</p>');
+    return;
+  }
+  if (!picoboot) {
+    showError('Not connected', '<p>The board is not connected. Nothing was written.</p>');
+    return;
+  }
+  const { samples, ctl } = gs2kImages(personaRecord(GS2K));
+  if (!samples || !ctl) {
+    showError('MU2000 not supported yet',
+      '<p>The firmware installed on this board has no MU2000. Flash a newer ' +
+      'firmware release first, then upload the MU2000 ROMs. Nothing was written.</p>');
+    return;
+  }
+  setUploadsEnabled(false);
+  let data;
+  try {
+    data = new Uint8Array(await file.arrayBuffer());
+    if (data.length !== r.size || await sha1hex(data) !== r.sha1) {
+      await refuseFile(file, r, p, data);
+      return;
+    }
+  } finally {
+    setUploadsEnabled(true);
+  }
+  holdGs2k(r.name, data);
+  if (gs2kAllHeld()) await writeGs2k();
+}
+
+// True when the board's push hash over `im` equals `want`; any doubt (blank,
+// stub error) = no.
+async function hashInPlace(im, want, progress) {
+  if (await regionBlank(im.flashOff, im.bytes)) return false;
+  try { return await hashImages([im], progress) === want; }
+  catch (e) { console.warn(`hash stub: ${e.message}; writing it`); return false; }
+}
+
+// All six held: build the pack, write what differs, verify the persona.
+// The samples go to the pushed image (upper half: flash4 stub), skipped when
+// the board's push hash of them already matches; the control tables go to
+// the in-place image (lower half), skipped when they read back identical.
+async function writeGs2k() {
+  if (!picoboot || !gs2kAllHeld()) return;
+  if (linkBusy) {
+    showError('Board busy',
+      '<p>A read or write operation is in progress — wait for it to ' +
+      'finish before writing the MU2000 ROMs.</p>');
+    return;
+  }
+  const el = document.querySelector(`[data-persona-status="${GS2K}"]`);
+  const say = (msg, cls = '') => { el.textContent = msg; el.className = 'mono pstatus' + (cls ? ' ' + cls : ''); };
+  const pct = f => Math.round(100 * f);
+  const rec = personaRecord(GS2K);
+  const { samples: sIm, ctl: cIm } = gs2kImages(rec);
+  if (!sIm || !cIm) return;
+  const was = { ok: gs2kOk, text: el.textContent, cls: el.className };
+  setUploadsEnabled(false);
+  linkBusy = true;
+  gs2kOk = false;
+  gs2kRetry = false;
+  showGs2kDots('busy');
+  let touched = false;           // true once an erase begins
+  let refused = false;           // the pre-check said this firmware expects other data: a retry cannot help
+  try {
+    say('converting…');
+    await new Promise(res => setTimeout(res));   // paint before the converter holds the thread
+    const pack = await buildGs2kPack(Object.fromEntries(gs2kFiles));
+    // The board's layout and its expected hash were made for one converter
+    // output; a different one (an older firmware, a newer page) is refused
+    // before anything is erased.
+    const want = pushHash([{ hwAddr: sIm.hwAddr, data: pack.samples }]);
+    const expect = expectedHash(rec);
+    const target = expect !== null && expect !== 0n ? expect : want;
+    const cexp = gs2kCtlExpect();
+    if (pack.samples.length !== sIm.bytes || pack.ctl.length > cIm.bytes || want !== target ||
+        (cexp && (pack.ctl.length !== cexp.bytes || crc32(pack.ctl) !== cexp.crc))) {
+      refused = true;
+      throw new Error('The converted MU2000 data does not match what the firmware on ' +
+                      'this board expects. Update the firmware, then try again. Nothing was written.');
+    }
+
+    say('checking…');
+    if (!await hashInPlace(sIm, want, f => say(`checking… ${pct(f)}%`))) {
+      touched = true;
+      await eraseFlash(sIm.flashOff, roundUpSector(sIm.bytes), f => say(`erasing… ${pct(f)}%`));
+      await writeFlash(sIm.flashOff, pack.samples, f => say(`writing… ${pct(f)}%`));
+    }
+    if (!await gs2kCtlInPlace(cIm, pack.ctl)) {
+      touched = true;
+      say('writing…');
+      await eraseFlash(cIm.flashOff, roundUpSector(cIm.bytes));
+      await writeFlash(cIm.flashOff, pack.ctl);
+    }
+    gs2kCtl = pack.ctl;          // what the board holds now: the connect-time check compares with it
+
+    say('verifying…');
+    let good = false;
+    try {
+      good = await hashImages([sIm], f => say(`verifying… ${pct(f)}%`)) === target;
+    } catch (e) { console.warn(`hash stub (${GS2K}): ${e.message}`); }
+    if (good) good = await gs2kCtlInPlace(cIm, pack.ctl);
+    gs2kOk = good;
+    gs2kRetry = !good;
+    showGs2kDots(good ? 'ok' : null);
+    say(good ? '' : 'not verified — write again', good ? '' : 'err');
+    if (!good)
+      showError('Verification failed',
+        '<p>The MU2000 data was written, but reading it back did not match. ' +
+        'Write it again with the button on the MU2000 card.</p>');
+  } catch (err) {
+    gs2kRetry = !refused;
+    if (touched) { gs2kOk = false; showGs2kDots(null); say('not verified — write again', 'err'); }
+    else { gs2kOk = was.ok; if (was.ok) gs2kRetry = false; showGs2kDots(was.ok ? 'ok' : null); el.textContent = was.text; el.className = was.cls; }
+    if (picoboot)      // an unplug is already reported by the disconnect handler
+      showError('Upload failed',
+        `<p>${escHtml(err.message)}</p>` +
+        (touched ? '<p>The MU2000 data on the board may be partly written — write it ' +
+                   'again before rebooting the board.</p>' : ''));
+  } finally {
+    linkBusy = false;
+    setUploadsEnabled(true);
+    renderGs2kNote();
   }
 }

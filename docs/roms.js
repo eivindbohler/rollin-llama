@@ -1,10 +1,14 @@
-// Reference ROM-dump table — mirrors tools/rl_roms.py in the dev repo.
-// name → { size, sha1, set }. Keep the two tables in sync.
+// Reference ROM-dump table: name → { size, sha1, set }. The MU2000 dumps
+// (persona gs2k) come from the converter's own table in gs2kpack.js, so the
+// list the converter checks and the list the page shows are the same one.
+import { GS2K_ROMS } from './gs2kpack.js';
+
 export const PERSONAS = [
   { id: 'mt32',    label: 'MT-32',     version: 'v1.07',  set: 'mt32' },
   { id: 'cm32l',   label: 'CM-32L',    version: 'v1.02',  set: 'cm32l' },
   { id: 'sc55mk1', label: 'SC-55 mk1', version: 'v1.21',     set: 'sc55-mk1' },
   { id: 'sc55mk2', label: 'SC-55 mk2', version: 'v1.01',     set: 'sc55-mk2' },
+  { id: 'gs2k',    label: 'MU2000',    version: 'v2.01',     set: 'gs2k' },
 ];
 
 export const REFERENCE_ROMS = [
@@ -22,6 +26,7 @@ export const REFERENCE_ROMS = [
   { set: 'sc55-mk2', name: 'sc55mk2_rom2.bin', label: 'ROM 2',     size: 524288,  sha1: '078cb5feea05e80bb9a1bb857a2163ee434fd053' },
   { set: 'sc55-mk2', name: 'sc55mk2_waverom1.bin', label: 'Wave ROM 1', size: 2097152, sha1: '96708cb21381c2fd03de4babbf7aea301c7594a6' },
   { set: 'sc55-mk2', name: 'sc55mk2_waverom2.bin', label: 'Wave ROM 2', size: 1048576, sha1: '4d91cdeaed048d653dbf846a221003c3a3f08279' },
+  ...GS2K_ROMS,                                      // set 'gs2k'
 ];
 
 export async function sha1hex(buf) {

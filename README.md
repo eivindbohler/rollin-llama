@@ -16,13 +16,15 @@
 Rollin' Llama is a wavetable daughterboard for the 2×13 wavetable header
 on a 1990s sound card. It also takes MIDI over USB and through a 3.5 mm
 MIDI jack, so it works with anything that speaks MIDI, sound card or not.
-On board are four selectable *personas*: Roland MT-32, CM-32L, SC-55 mk1
-and SC-55 mk2. Each persona runs the original machine's control firmware
+On board are five selectable *personas*. Four are Roland's MT-32, CM-32L,
+SC-55 mk1 and SC-55 mk2: each runs the original machine's control firmware
 on a clean-room HDL model of its hardware inside the FPGA, so what you hear
 is the original synth's behavior, not a sample set or an approximation.
+The fifth, GS2K, is this project's own GM/GS synth, playing the sample set
+of a Yamaha MU2000.
 
-The ROMs are not included. You supply control and PCM ROM dumps from your
-own units through the web flasher; they never leave your browser.
+The ROMs are not included. You supply ROM dumps from your own units through
+the web flasher; they never leave your browser.
 
 - [Hardware](#hardware)
 - [Personas](#personas)
@@ -43,16 +45,17 @@ own units through the web flasher; they never leave your browser.
 
 ## Personas
 
-| Persona | Model of | Core |
+| Persona | Synth | Core |
 |---|---|---|
 | `mt32` | Roland MT-32 (v1.07 firmware) | Intel 8095 (MCS-96) control CPU, LA32 synth, reverb chip |
 | `cm32l` | Roland CM-32L (v1.02 firmware) | as the MT-32, with the CM-32L's PCM set |
 | `sc55mk1` | Roland SC-55 mk1 (v1.21 firmware) | H8/532 CPU + PCM engine |
 | `sc55mk2` | Roland SC-55 mk2 (v1.01 firmware) | H8/532 CPU + PCM engine + sub-MCU |
+| `gs2k` | GS2K: own GM/GS synth on the Yamaha MU2000 (v2.01) sample set | sample engine + reverb/chorus DSP, voice control on the RP2040, 48 kHz |
 
 The LED shows the active persona: blue MT-32, cyan CM-32L, green SC-55
-mk1, purple SC-55 mk2. It breathes slowly when idle and lights with each
-MIDI message.
+mk1, purple SC-55 mk2, amber GS2K. It breathes slowly when idle and lights
+with each MIDI message.
 
 ## Getting started
 
@@ -64,6 +67,8 @@ Use the **[web flasher](https://eivindbohler.github.io/rollin-llama/)**
 2. Open the flasher, put the board in BOOTSEL mode, connect.
 3. Flash the release, then upload your ROM dumps. They are verified and
    converted entirely in your browser; no ROM data leaves your machine.
+   GS2K's six MU2000 files are combined into one data set, so they are
+   written together once all six are there.
    *Upload from zip…* takes a zip of dumps and uploads every file inside
    whose SHA-1 matches, whatever it is named; *Erase all ROMs…* wipes them
    from the board again (after a confirmation); firmware and settings stay.
@@ -72,8 +77,8 @@ Use the **[web flasher](https://eivindbohler.github.io/rollin-llama/)**
    seconds after the last change and restores it on power-up.
 5. Optional: the *Vintage output stage* section (shown while the board is
    in normal MIDI mode) switches on a model of the original units' output
-   circuit, one switch for the MT-32/CM-32L and one for the SC-55s; see
-   the [FAQ](#faq). The board remembers each choice.
+   circuit, one switch for the MT-32/CM-32L and one for the SC-55s (GS2K
+   has none); see the [FAQ](#faq). The board remembers each choice.
 6. Optional: the *Settings* section (shown while the board is in BOOTSEL
    mode) switches the board's extra USB interfaces (audio capture stream,
    USB audio) on; both are off until you enable them. Your computer sees
@@ -106,7 +111,7 @@ uploads and settings go through PICOBOOT.
 
 ## Using the board
 
-Switch persona with the button (cycles mt32 → cm32l → sc55mk1 → sc55mk2)
+Switch persona with the button (cycles mt32 → cm32l → sc55mk1 → sc55mk2 → gs2k)
 or from DOS with ROLLIN.COM. The board remembers the last persona and the
 volume and starts there on the next power-up.
 
@@ -116,7 +121,7 @@ volume and starts there on the next power-up.
 machine the card sits in, over the MPU-401 port (default 330, or give the
 base in hex as a second argument).
 
-    ROLLIN mt32           select a mode: mt32, cm32l, sc55mk1, sc55mk2
+    ROLLIN mt32           select a mode: mt32, cm32l, sc55mk1, sc55mk2, gs2k
     ROLLIN sc55mk1 300    same, on an MPU-401 at port 300
     ROLLIN /V100          set the headphone/line-out volume, 0..127
                           (127 = full, 0 = mute)
@@ -127,24 +132,22 @@ on the card a few seconds after the last change and comes back on power-up.
 
 ## Releases
 
-Each tagged release carries two `.uf2` files. Both hold the RP2040 firmware
-and all four FPGA bitstreams, and neither contains any ROM data.
+Each tagged release carries one file, `rollin-llama-vX.Y.Z-full.uf2`. It
+holds the RP2040 firmware and all five FPGA bitstreams, and no ROM data. It
+rewrites the lower 16 MB of the flash, so the ROMs have to be uploaded
+again afterwards and the settings (USB interfaces, volume) go back to their
+defaults. The file is 33.6 MB and takes a few minutes to flash.
 
-- `rollin-llama-vX.Y.Z.uf2` is the normal update. Your uploaded ROMs and
-  your settings are untouched.
-- `rollin-llama-vX.Y.Z-full.uf2` rewrites the whole 16 MB image area of the
-  flash, for a card in an unknown state. Everything else is erased, so the
-  ROMs have to be uploaded again afterwards and the USB interface settings
-  go back to off. The file is 33.5 MB and takes a few minutes to flash.
-
-Either can be flashed with the web flasher or by dragging it onto the
-RPI-RP2 drive in BOOTSEL mode.
+It can be flashed with the web flasher or by dragging it onto the RPI-RP2
+drive in BOOTSEL mode. The ROMs need the web flasher: the GS2K samples and
+the SC-55 mk2's wave ROMs live in the upper 16 MB of the flash, which a
+`.uf2` cannot reach.
 
 ## Board revisions
 
 - **Rev 1.0**: 64 Mbit SDRAM, 128 Mbit flash. Runs firmware up to v1.0.x.
 - **Rev 1.1**: 2 × 64 Mbit PSRAM, 256 Mbit flash, -2 speed grade FPGA. All
-  personas stay resident; firmware v1.1.0 and up.
+  personas stay resident; firmware v1.1.0 and up. GS2K needs this board.
 
 Firmware images declare the board revision they need; the flasher reads
 the board's revision and refuses an image it cannot run, and the firmware
@@ -165,7 +168,7 @@ From units you own: dump them yourself. The flasher checks each file you
 upload against the reference hash and refuses anything else. If you own
 the real units but find it hard to dump the ROMs, they should also be
 available for download at archive.org: try searching for "sc 55 rom set"
-and "mt 32 rom set".
+and "mt 32 rom set", and on mdk.cab: mu2000 -> "standalone set".
 
 **Which ROM versions are supported?**
 
@@ -189,6 +192,12 @@ and hash.
 | | ROM 2 | 512 KiB | `078cb5feea05e80bb9a1bb857a2163ee434fd053` |
 | | Wave ROM 1 | 2 MiB | `96708cb21381c2fd03de4babbf7aea301c7594a6` |
 | | Wave ROM 2 | 1 MiB | `4d91cdeaed048d653dbf846a221003c3a3f08279` |
+| GS2K (MU2000 v2.01) | Program ROM (high) | 2 MiB | `00d008b6a2536a71681ce2f4fd1a5853406f82f2` |
+| | Program ROM (low) | 2 MiB | `fd8fe6a5cbba028d847453c004cb2dcf9ba02013` |
+| | Wave ROM 1 (IC49) | 8 MiB | `e7098246b33c3cf22ed8cc15ed6383f8a06d17e9` |
+| | Wave ROM 2 (IC50) | 8 MiB | `d45a2e85859e05046f3ede8317a9bb0b88898116` |
+| | Wave ROM 3 (IC53) | 8 MiB | `9e8b55c2cbac3f69cc0b17aeaf02053145bfaeda` |
+| | Wave ROM 4 (IC54) | 8 MiB | `7670d672e24d6388fa92799175f35869a140c451` |
 
 **Does it work without a wavetable header, or outside a PC?**
 
@@ -223,9 +232,20 @@ primarily meant as a debugging tool, and is not a sound device.
 
 **How is this different from a software emulator?**
 
-It is the original control firmware running on hardware models of the
-original chips at their native clocks, inside the FPGA. Timing, mixing and
-the DAC rate are the synth's own, not an approximation of them.
+For the Roland personas, it is the original control firmware running on
+hardware models of the original chips at their native clocks, inside the
+FPGA. Timing, mixing and the DAC rate are the synth's own, not an
+approximation of them.
+
+**What is the GS2K persona?**
+
+A General MIDI / GS synth of this project's own design. It plays the
+waveforms of a Yamaha MU2000 and uses the MU2000's GS voice data (tones,
+variation tones, sound effects and drum kits), read from your own ROM
+dumps, on a sample engine in the FPGA at 48 kHz, with reverb and chorus
+modelled on the MU2000's. No Yamaha firmware runs on the board, so it is
+not an MU2000 emulation: it covers the GS sound set only (no XG), and it is
+not meant to match an MU2000 bit for bit.
 
 **Is this based on an existing emulator, or on Roland's designs?**
 
@@ -241,6 +261,17 @@ Roland's, implemented the HDL from the specifications alone. No Roland
 schematics, HDL or firmware source were used anywhere. The only Roland
 material in the system is the ROM set you upload, which is why the ROMs
 are not included.
+
+**How was GS2K made?**
+
+Differently from the Roland personas. No original firmware runs, so there
+is no clean-room hardware model either. The synth engine and its voice
+control are the project's own, written to behave like the MU2000. That
+behavior was worked out by studying the unit's program ROM and measuring
+what it does. The samples, voice data and conversion tables come from your
+own ROM dumps, converted in your browser. The firmware does carry the
+project's model of the MU2000's reverb and chorus, including parameter
+values measured from the MU2000.
 
 **Was AI used in this project?**
 
@@ -279,6 +310,10 @@ SC-55s it adds the gentle loss of treble from their DAC, about 2 dB at
 12 kHz; the difference is subtle. Off, the output is the flat, bit-exact
 signal described above.
 
+GS2K is not a model of an MU2000, so none of this applies to it: it plays
+the MU2000's samples through its own engine, and it has no vintage output
+stage.
+
 **Can I switch persona from a game or a player?**
 
 From DOS, with ROLLIN.COM; otherwise the button. The last choice is
@@ -286,8 +321,9 @@ remembered across power cycles.
 
 **Do firmware updates keep my ROMs?**
 
-Yes. The update file leaves the ROM data and the settings alone. Only the
-`-full` recovery file wipes them.
+Not at the moment. Releases come as the full file only, which erases the
+ROMs in the lower half of the flash and the settings, so upload your ROMs
+again with the web flasher afterwards.
 
 **Is there a volume control?**
 
@@ -309,3 +345,8 @@ Roland Corporation, and MT-32, CM-32L and SC-55 are Roland product names.
 Roland Corporation has no connection with this project. The project
 contains no Roland code or data; the ROMs it needs come from hardware you
 own.
+
+Yamaha, XG and MU2000 are trademarks or product names of Yamaha
+Corporation. Yamaha Corporation has no connection with this project. No
+Yamaha ROM data ships with the project; the GS2K's samples and voice data
+come from MU2000 ROMs you own.
