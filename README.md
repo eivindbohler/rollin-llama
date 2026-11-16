@@ -336,7 +336,8 @@ restores it on power-up.
 You can't, yet. Once I'm completely happy with everything and sample boards
 have gone out to a group of testers, I'll probably start making smaller batches
 and sell them on a first-come, first-served basis.  
-Follow my [YouTube channel](https://www.youtube.com/@eivindbohler) for more updates.
+Follow my [YouTube channel](https://www.youtube.com/@eivindbohler), and watch
+this page for new announcements.
 
 ## Legal
 

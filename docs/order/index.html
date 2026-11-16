@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Order a Rollin' Llama</title>
+<style>
+  /* Dark palette shared with the flasher (../index.html). This page is dark only. */
+  :root {
+    --bg: #14161a; --panel: #1d2026; --text: #e8e6e0; --dim: #9a978f;
+    --accent: #e0a010; --ok: #4caf7d; --err: #d05c5c; --line: #2c3038;
+    --panel2: #181b20; --dot: #4a4e56; --btn: #e0a010; --btn-dis: #3a3e46;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, sans-serif;
+  }
+  main { max-width: 780px; margin: 0 auto; padding: 1.5rem 1.25rem 3rem; }
+  header { margin-bottom: .8rem; }
+  header img { height: 74px; width: auto; display: block; margin-left: -8px; }
+  .tag { color: var(--dim); font-size: .82rem; }
+  header .tag { margin-top: .15rem; }
+  main > p { margin: 1.4rem 0; }
+  a { color: var(--accent); }
+  h2 { font-size: 1rem; margin: 0 0 .5rem; }
+  section {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 8px; padding: 1rem 1.1rem; margin-top: .7rem;
+  }
+  .hidden { display: none; }
+  .nw { white-space: nowrap; }
+  .ok { color: var(--ok); } .err { color: var(--err); }
+
+  .photo { margin: 1.4rem 0; }
+  .photo img { display: block; width: 300px; max-width: 100%; height: auto; margin: 0 auto; }
+
+  #buy .facts {
+    display: flex; align-items: baseline; justify-content: space-between;
+    flex-wrap: wrap; gap: .3rem 1.5rem;
+  }
+  #price { font-size: 2rem; font-weight: 650; line-height: 1.2; }
+  #price small { font-size: .82rem; font-weight: 400; color: var(--dim); margin-left: .4rem; }
+  .dot {
+    display: inline-block; width: .6em; height: .6em; border-radius: 50%;
+    background: var(--dot); margin-right: .55em; vertical-align: 8%;
+  }
+  .dot.ok { background: var(--ok); } .dot.err { background: var(--err); }
+  #next-order { margin: .35rem 0 0; color: var(--dim); font-size: .9rem; }
+  #lead { margin: .7rem 0 0; }
+
+  form { margin-top: .9rem; }
+  form .row { display: flex; flex-wrap: wrap; gap: .5rem; }
+  input[type=email] {
+    flex: 1 1 15rem; min-width: 0;
+    background: var(--bg); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px;
+    padding: .5rem .7rem; font: inherit;
+  }
+  input[type=email]::placeholder { color: var(--dim); }
+  input[type=email]:focus-visible, button:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 2px;
+  }
+  button {
+    background: var(--btn); color: #1a1608; border: 0; border-radius: 6px;
+    padding: .5rem 1.1rem; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button:disabled { background: var(--btn-dis); color: var(--dim); cursor: default; }
+  #captcha { margin-top: .7rem; min-height: 65px; }
+  #captcha:empty { min-height: 0; }
+  /* Honeypot: off screen for people, still present for bots that fill every field. */
+  .hp { position: absolute; left: -10000px; width: 1px; height: 1px; overflow: hidden; }
+  .status { font-size: .88rem; margin: .5rem 0 0; min-height: 1.3em; }
+  #thanks { margin: .9rem 0 0; }
+  #thanks b { color: var(--ok); }
+
+  ol { margin: 0; padding-left: 1.3rem; }
+  ol li { margin: .3rem 0; }
+  dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: .45rem 1rem; }
+  dt { color: var(--dim); }
+  dd { margin: 0; }
+  .fine { color: var(--dim); font-size: .82rem; }
+  #mock-banner {
+    border: 1px dashed var(--accent); border-radius: 6px; color: var(--accent);
+    font-size: .82rem; padding: .35rem .7rem; margin-bottom: 1rem;
+  }
+  footer {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+    color: var(--dim); font-size: .78rem; margin-top: 2.2rem;
+  }
+  footer a { color: inherit; }
+
+  @media (max-width: 520px) {
+    dl { grid-template-columns: 1fr; gap: 0; }
+    dd { margin-bottom: .6rem; }
+    form .row button { flex: 1 1 100%; }
+  }
+</style>
+</head>
+<body>
+<main>
+  <div id="mock-banner" class="hidden"></div>
+
+  <header>
+    <img src="../logo.svg" alt="Rollin' Llama">
+    <div class="tag">Order a board</div>
+  </header>
+
+  <p>
+    Rollin' Llama is a wavetable daughterboard for 1990s sound cards that
+    runs the original Roland <span class="nw">MT-32</span>, <span class="nw">CM-32L</span>
+    and <span class="nw">SC-55</span> firmware in an FPGA.
+    The <a href="https://github.com/eivindbohler/rollin-llama">project page</a>
+    has the full description.
+  </p>
+
+  <figure class="photo">
+    <img src="../board-front.png" width="700" height="941" alt="Rollin' Llama board, front">
+  </figure>
+
+  <section id="buy">
+    <div class="facts">
+      <div id="price" aria-live="polite">&hellip;</div>
+      <div id="stock" aria-live="polite"><span class="dot"></span>Checking stock&hellip;</div>
+    </div>
+    <p id="next-order" class="hidden"></p>
+    <p id="lead"></p>
+
+    <form id="order" novalidate>
+      <div class="row">
+        <input type="email" id="email" name="email" placeholder="you@example.com"
+               aria-label="Email address" autocomplete="email" maxlength="254" required>
+        <button type="submit" id="submit" disabled>Request a board</button>
+      </div>
+      <div class="hp" aria-hidden="true">
+        <label>Leave this field empty
+          <input type="text" id="website" name="website" tabindex="-1" autocomplete="off">
+        </label>
+      </div>
+      <div id="captcha"></div>
+      <p id="msg" class="status" role="status" aria-live="polite"></p>
+    </form>
+
+    <p id="thanks" class="hidden" role="status">
+      <b>Thanks, you're on the list.</b> I'll email you when it's your turn.
+    </p>
+  </section>
+
+  <section>
+    <h2>What happens next</h2>
+    <ol>
+      <li>You leave your email address here.</li>
+      <li>When it's your turn, I email you. Requests are handled in the order they arrive.</li>
+      <li>You reply with your name, shipping address and how many boards you want, and you pay.</li>
+      <li>I ship your board and send you the tracking number.</li>
+    </ol>
+    <p class="fine">
+      A request is not a reservation. The stock number above is updated by
+      hand, so a board is yours once I've confirmed it by email.
+    </p>
+  </section>
+
+  <section>
+    <h2>Good to know</h2>
+    <dl>
+      <dt>Shipping</dt>
+      <dd>Ships from Norway. Shipping varies depending on your country and
+          comes on top of the board price, as do any import VAT or duties
+          your country charges.</dd>
+      <dt>Payment</dt>
+      <dd>PayPal. You pay after I've confirmed your board, not before.</dd>
+      <dt>Order</dt>
+      <dd>First come, first served.</dd>
+    </dl>
+  </section>
+
+  <p class="fine">
+    Your email address is used only to contact you about this order. It is
+    not shared with anyone, and I delete it if you ask me to.
+  </p>
+
+  <footer>
+    <a href="https://github.com/eivindbohler/rollin-llama">github.com/eivindbohler/rollin-llama</a>
+    <span>Copyright &copy; 2026, Eivind B&oslash;hler</span>
+  </footer>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  // Both values are public.
+  const PROD_API = 'https://rollin-llama-orders.rollin-llama-orders.workers.dev';   // no trailing slash
+  const PROD_SITE_KEY = '0x4AAAAAAGCo4AaLsG3DXvGX';
+  // Cloudflare's "always passes" Turnstile test key, the match for a local Worker's test secret.
+  const TEST_SITE_KEY = '1x00000000000000000000AA';
+
+  // On localhost the page never talks to the real Worker or the real captcha
+  // widget; both only accept the published page. Instead:
+  //   ?api=http://localhost:8787   talk to a local Worker (`wrangler dev`)
+  //   ?mock=instock | soldout | down | fail   no Worker at all (the default)
+  const params = new URLSearchParams(location.search);
+  const LOCAL = ['localhost', '127.0.0.1'].includes(location.hostname);
+  const API = LOCAL ? (params.get('api') || '') : PROD_API;
+  const TURNSTILE_SITE_KEY = LOCAL ? TEST_SITE_KEY : PROD_SITE_KEY;
+  const MOCK = LOCAL && (API === '' || params.has('mock'))
+    ? (params.get('mock') || 'instock') : null;
+
+  const $ = (id) => document.getElementById(id);
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  async function getStatus() {
+    if (MOCK) {
+      await sleep(300);
+      if (MOCK === 'down') throw new Error('mock: endpoint down');
+      return MOCK === 'soldout'
+        ? { price: 99, currency: 'EUR', stock: 0, next_order: null }
+        : { price: 99, currency: 'EUR', stock: 12, next_order: '2027-01-15' };
+    }
+    if (!API) throw new Error('no API configured');
+    const r = await fetch(API + '/status');
+    if (!r.ok) throw new Error('status ' + r.status);
+    return r.json();
+  }
+
+  // Resolves on success, rejects with the HTTP status (0 for a network error).
+  async function postSignup(body) {
+    if (MOCK) {
+      await sleep(600);
+      if (MOCK === 'fail') throw 500;
+      return;
+    }
+    let r;
+    try {
+      r = await fetch(API + '/signup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (e) { throw 0; }
+    if (!r.ok) throw r.status;
+  }
+
+  // ---- price and stock -------------------------------------------------
+  let available = false;   // /status answered, so the form may be used
+
+  function showStatus(s) {
+    if (!Number.isFinite(s.price) || !Number.isInteger(s.stock) || s.stock < 0) {
+      throw new Error('bad status payload');
+    }
+    const price = new Intl.NumberFormat('en', {
+      style: 'currency', currency: s.currency,
+      maximumFractionDigits: Number.isInteger(s.price) ? 0 : 2,
+    }).format(s.price);   // throws on an invalid currency code
+
+    $('price').textContent = price;
+    const note = document.createElement('small');
+    note.textContent = 'per board, plus shipping';
+    $('price').append(note);
+
+    // A date (YYYY-MM-DD), or anything else for "not decided yet".
+    const next = /^\d{4}-\d{2}-\d{2}$/.test(s.next_order) ? new Date(s.next_order + 'T00:00:00Z') : null;
+    const when = document.createElement('span');
+    when.className = 'nw';
+    when.textContent = next && !isNaN(next)
+      ? next.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
+      : 'TBD';
+    $('next-order').replaceChildren('Next order from manufacturer: ', when);
+    $('next-order').classList.remove('hidden');
+
+    const dot = document.createElement('span');
+    if (s.stock > 0) {
+      dot.className = 'dot ok';
+      $('stock').replaceChildren(dot, 'In stock: ' + s.stock);
+      $('lead').textContent = 'Leave your email address and I\'ll get in touch to arrange the rest.';
+      $('submit').textContent = 'Request a board';
+    } else {
+      dot.className = 'dot err';
+      $('stock').replaceChildren(dot, 'Sold out');
+      $('lead').textContent = 'Leave your email address to get in line for the next batch.';
+      $('submit').textContent = 'Join the waitlist';
+    }
+    available = true;
+    $('submit').disabled = false;
+  }
+
+  function showUnavailable() {
+    $('price').textContent = '–';
+    const dot = document.createElement('span');
+    dot.className = 'dot';
+    $('stock').replaceChildren(dot, 'Stock unknown');
+    $('lead').textContent = 'Ordering is temporarily unavailable. Please try again later.';
+    $('lead').className = 'err';
+    $('submit').disabled = true;
+  }
+
+  getStatus().then(showStatus).catch(showUnavailable);
+
+  // ---- captcha ---------------------------------------------------------
+  let token = null, widget = null, captchaBroken = false;
+
+  window.onTurnstileLoad = () => {
+    widget = turnstile.render('#captcha', {
+      sitekey: TURNSTILE_SITE_KEY,
+      theme: 'dark',
+      callback: (t) => { token = t; },
+      'expired-callback': () => { token = null; },
+      'error-callback': () => { token = null; captchaBroken = true; },
+    });
+  };
+
+  function resetCaptcha() {
+    token = null;
+    if (widget !== null) turnstile.reset(widget);
+  }
+
+  // ---- submit ----------------------------------------------------------
+  function say(text, cls) {
+    $('msg').textContent = text;
+    $('msg').className = 'status' + (cls ? ' ' + cls : '');
+  }
+
+  $('order').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    if (!available) return;
+
+    const input = $('email');
+    input.value = input.value.trim();
+    if (!input.value || !input.checkValidity()) {
+      say('Enter a valid email address.', 'err');
+      input.focus();
+      return;
+    }
+    // Mock mode tolerates a missing widget so the page can be tried offline.
+    if (!token && !(MOCK && widget === null)) {
+      say(widget === null || captchaBroken
+        ? 'The captcha did not load. Check your connection or content blocker, then reload the page.'
+        : 'Complete the captcha first.', 'err');
+      return;
+    }
+
+    $('submit').disabled = true;
+    say('Sending…');
+    try {
+      await postSignup({
+        email: input.value,
+        turnstileToken: token,
+        website: $('website').value,
+      });
+      $('order').classList.add('hidden');
+      $('lead').classList.add('hidden');
+      $('thanks').classList.remove('hidden');
+    } catch (status) {
+      say(status === 429
+        ? 'Too many attempts. Wait a minute and try again.'
+        : 'That didn\'t go through. Please try again in a moment.', 'err');
+      resetCaptcha();   // a Turnstile token is single-use
+      $('submit').disabled = false;
+    }
+  });
+
+  if (MOCK) {
+    $('mock-banner').textContent =
+      'Mock mode (' + MOCK + '): no data is sent. Try ?mock=instock, soldout, down or fail.';
+    $('mock-banner').classList.remove('hidden');
+  }
+})();
+</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit&onload=onTurnstileLoad" async defer></script>
+</body>
+</html>
