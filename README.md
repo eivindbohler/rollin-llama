@@ -321,9 +321,11 @@ remembered across power cycles.
 
 **Do firmware updates keep my ROMs?**
 
-Not at the moment. Releases come as the full file only, which erases the
-ROMs in the lower half of the flash and the settings, so upload your ROMs
-again with the web flasher afterwards.
+Usually, yes. A release normally includes an update file that leaves the
+ROM data and the settings alone; only the `-full` recovery file wipes them.
+When a release changes the flash layout, as v1.1.4 did, it ships as the
+full file only and its release notes say so. In that case, upload your
+ROMs again with the web flasher afterwards.
 
 **Is there a volume control?**
 
