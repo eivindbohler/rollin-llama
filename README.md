@@ -13,6 +13,11 @@
 
 # Rollin' Llama
 
+> [!NOTE]
+> **Boards are now available to order.** Head over to the
+> [order page](https://eivindbohler.github.io/rollin-llama/order/) to request
+> one, or to join the waitlist if they're sold out.
+
 Rollin' Llama is a wavetable daughterboard for the 2×13 wavetable header
 on a 1990s sound card. It also takes MIDI over USB and through a 3.5 mm
 MIDI jack, so it works with anything that speaks MIDI, sound card or not.
@@ -335,11 +340,11 @@ restores it on power-up.
 
 **Where can I buy one?**
 
-You can't, yet. Once I'm completely happy with everything and sample boards
-have gone out to a group of testers, I'll probably start making smaller batches
-and sell them on a first-come, first-served basis.  
-Follow my [YouTube channel](https://www.youtube.com/@eivindbohler), and watch
-this page for new announcements.
+On the **[order page](https://eivindbohler.github.io/rollin-llama/order/)**.
+It shows the current price and how many boards are in stock. Leave your email
+address there, and I'll get in touch when it's your turn. Requests are handled
+first come, first served. If the boards are sold out, the same form puts you on
+the waitlist for the next batch.
 
 ## Legal
 
