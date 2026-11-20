@@ -216,7 +216,7 @@
       if (MOCK === 'down') throw new Error('mock: endpoint down');
       return MOCK === 'soldout'
         ? { price: 99, currency: 'EUR', stock: 0, next_order: null }
-        : { price: 99, currency: 'EUR', stock: 12, next_order: '2027-01-15' };
+        : { price: 99, currency: 'EUR', stock: 12, next_order: '2027-01-15', next_order_approx: true };
     }
     if (!API) throw new Error('no API configured');
     const r = await fetch(API + '/status');
@@ -263,8 +263,10 @@
     const next = /^\d{4}-\d{2}-\d{2}$/.test(s.next_order) ? new Date(s.next_order + 'T00:00:00Z') : null;
     const when = document.createElement('span');
     when.className = 'nw';
+    // "approx." only goes with a date, never with TBD.
     when.textContent = next && !isNaN(next)
-      ? next.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
+      ? (s.next_order_approx === true ? 'approx. ' : '')
+        + next.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
       : 'TBD';
     $('next-order').replaceChildren('Next order from manufacturer: ', when);
     $('next-order').classList.remove('hidden');
