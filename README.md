@@ -137,16 +137,24 @@ on the card a few seconds after the last change and comes back on power-up.
 
 ## Releases
 
-Each tagged release carries one file, `rollin-llama-vX.Y.Z-full.uf2`. It
-holds the RP2040 firmware and all five FPGA bitstreams, and no ROM data. It
-rewrites the lower 16 MB of the flash, so the ROMs have to be uploaded
-again afterwards and the settings (USB interfaces, volume) go back to their
-defaults. The file is 33.6 MB and takes a few minutes to flash.
+Each tagged release normally carries two files. Both hold the RP2040
+firmware and all five FPGA bitstreams, and neither holds ROM data.
 
-It can be flashed with the web flasher or by dragging it onto the RPI-RP2
-drive in BOOTSEL mode. The ROMs need the web flasher: the GS2K samples and
-the SC-55 mk2's wave ROMs live in the upper 16 MB of the flash, which a
-`.uf2` cannot reach.
+- `rollin-llama-vX.Y.Z.uf2` is the update file. It replaces the firmware
+  and the bitstreams and leaves the ROMs and the settings alone. It is
+  16.7 MB. Use this one.
+- `rollin-llama-vX.Y.Z-full.uf2` is the recovery file. It rewrites the
+  lower 16 MB of the flash, so the ROMs have to be uploaded again afterwards
+  and the settings go back to their defaults. The settings are the USB
+  interfaces and the volume. It is 33.6 MB and takes a few minutes to flash.
+
+When a release changes the flash layout, as v1.1.4 did, it ships as the
+full file only, and its release notes say so.
+
+Either file can be flashed with the web flasher or by dragging it onto the
+RPI-RP2 drive in BOOTSEL mode. The ROMs need the web flasher, because the
+GS2K samples and the SC-55 mk2's wave ROMs live in the upper 16 MB of the
+flash, which a `.uf2` cannot reach.
 
 ## Board revisions
 

@@ -1,8 +1,9 @@
 // Rollin' Llama web flasher — connection state machine.
 //
 // Normal mode: the board is a USB-MIDI device ("Rollin' Llama"). The live-mode
-// operations are the BOOTSEL doorbell SysEx (F0 7D 52 4C 02 F7) and the
-// volume SysEx (F0 7D 52 4C 03 vv F7); everything else — version read,
+// operations are the BOOTSEL doorbell SysEx (F0 7D 52 4C 02 F7), persona
+// select and query (01, 07), volume (03, 04) and the vintage output stage
+// (05, 06); everything else — version read,
 // firmware flash, ROM writes, settings — happens over PICOBOOT (WebUSB) once
 // the board re-enumerates as RPI-RP2.
 import { REFERENCE_ROMS, PERSONAS, sha1hex } from './roms.js';
@@ -91,6 +92,9 @@ const VOLUME_SYX = v => [0xF0, 0x7D, 0x52, 0x4C, 0x03, v & 0x7F, 0xF7];
 const VOLUME_QUERY = [0xF0, 0x7D, 0x52, 0x4C, 0x04, 0xF7];   // reply: same, + vv before F7
 const STAGE_SYX = m => [0xF0, 0x7D, 0x52, 0x4C, 0x05, m & 0x07, 0xF7];   // vintage output stage: bit 0 MT-32 family, bit 1 SC-55 family
 const STAGE_QUERY = [0xF0, 0x7D, 0x52, 0x4C, 0x06, 0xF7];   // reply: same, + mode before F7
+const PERSONA_SYX = id => [0xF0, 0x7D, 0x52, 0x4C, 0x01, ...[...id].map(c => c.charCodeAt(0) & 0x7F), 0xF7];
+const PERSONA_QUERY = [0xF0, 0x7D, 0x52, 0x4C, 0x07, 0xF7];   // reply: 07 <state> <name> F7, also sent unasked on every switch
+const PSTATE_STARTING = 0, PSTATE_RUNNING = 1, PSTATE_FAILED = 2, PSTATE_NONE = 3;
 const MIDI_NAME = "Rollin' Llama";
 
 const $ = id => document.getElementById(id);
@@ -215,8 +219,14 @@ $('btn-connect').addEventListener('click', async () => {
     $('firmware').classList.remove('hidden');
     $('roms').classList.remove('hidden');
     $('settings').classList.remove('hidden');
-    $('volume').classList.add('hidden');      // live controls: MIDI mode only
+    $('persona').classList.add('hidden');     // live controls: MIDI mode only
+    $('volume').classList.add('hidden');
     $('stage').classList.add('hidden');
+    // Read again when the board is back in MIDI mode: the firmware flashed
+    // here may not answer the persona query.
+    personaKnown = false;
+    personaSupported = false;
+    showPersona();
     setStatus('fw-status', '');
     setStatus('rom-status', '');
     setStatus('settings-status', '');
@@ -298,6 +308,7 @@ navigator.usb?.addEventListener('disconnect', e => {
   $('firmware').classList.add('hidden');
   $('roms').classList.add('hidden');
   $('settings').classList.add('hidden');
+  showPersonaSection();
   $('volume').classList.remove('hidden');
   $('stage').classList.remove('hidden');
   $('fw-progress').classList.add('hidden');
@@ -463,6 +474,78 @@ $('btn-save-settings').addEventListener('click', async () => {
   }
 });
 
+// ---- persona (live, MIDI mode) ---------------------------------------------
+// One button per persona; the lit one is the persona the board runs or is
+// starting. The board reports its state (SysEx 07) on request and unasked
+// after every switch, including button presses on the board, so the
+// buttons follow the board. The section stays hidden until the first
+// report, and hides again when a board answers the volume query but not
+// this one: a firmware without the query never shows the section.
+let personaSupported = false;       // a report came from the board in MIDI mode
+let personaKnown = false;
+let persona = null;                 // { state: PSTATE_*, id: manifest name }
+let personaTimer = null;
+const personaLabel = id => PERSONAS.find(p => p.id === id)?.label ?? id;
+
+for (const p of PERSONAS) {
+  const b = document.createElement('button');
+  b.textContent = p.label;
+  b.dataset.persona = p.id;
+  b.disabled = true;
+  b.addEventListener('click', () => selectPersona(p.id));
+  $('persona-buttons').append(b);
+}
+
+function showPersonaSection() {
+  $('persona').classList.toggle('hidden', !personaSupported || !!picoboot);
+}
+
+function showPersona() {
+  const st = personaKnown ? persona.state : null;
+  for (const b of $('persona-buttons').children) {
+    const lit = personaKnown && b.dataset.persona === persona.id &&
+                (st === PSTATE_RUNNING || st === PSTATE_STARTING);
+    b.classList.toggle('active', lit);
+    b.setAttribute('aria-pressed', lit ? 'true' : 'false');
+    // A failed persona stays clickable: selecting it again retries the boot.
+    b.disabled = !personaKnown || st === PSTATE_STARTING || lit;
+  }
+  if (!personaKnown) return;
+  const name = personaLabel(persona.id);
+  if (st === PSTATE_STARTING)
+    setStatus('persona-status', `Starting ${name}…`);
+  else if (st === PSTATE_RUNNING)
+    setStatus('persona-status', `${name} is running.`, 'ok');
+  else if (st === PSTATE_FAILED)
+    setStatus('persona-status',
+      `${name} did not start. Its ROMs may be missing. Check them in BOOTSEL mode, or pick another persona.`, 'err');
+  else
+    setStatus('persona-status',
+      'The board cannot start a persona. Put it in BOOTSEL mode and check the firmware.', 'err');
+}
+
+async function selectPersona(id) {
+  try {
+    const out = await midiOut('persona-status');
+    if (!out) {
+      setStatus('persona-status',
+        `No "${MIDI_NAME}" MIDI device found. The board must be plugged in ` +
+        'and in normal (MIDI) mode, not BOOTSEL.', 'err');
+      return;
+    }
+    out.send(PERSONA_SYX(id));
+    persona = { state: PSTATE_STARTING, id };   // the board's own report follows
+    showPersona();
+    // The board sends no report when it ignores the request, for example
+    // for a persona its flash does not hold. Ask again so the buttons
+    // show what the board really runs.
+    clearTimeout(personaTimer);
+    personaTimer = setTimeout(() => out.send(PERSONA_QUERY), 2000);
+  } catch (e) {
+    setStatus('persona-status', 'MIDI access failed: ' + e.message, 'err');
+  }
+}
+
 // ---- volume (live, MIDI mode) ----------------------------------------------
 // 128 steps of 0.5 dB, 127 = 0 dB, 0 = mute; the board persists the last
 // value itself (idle auto-save), so nothing is written from here. The
@@ -503,35 +586,57 @@ function onMidiMessage(e) {
     $('stage-sc').disabled = false;
     setStatus('stage-status', '');
   }
+  if (d.length >= 7 && d[0] === 0xF0 && d[1] === 0x7D && d[2] === 0x52 &&
+      d[3] === 0x4C && d[4] === 0x07 && d[d.length - 1] === 0xF7) {
+    clearTimeout(personaTimer);
+    personaKnown = true;
+    persona = { state: d[5], id: String.fromCharCode(...d.slice(6, -1)) };
+    showPersona();
+    personaSupported = true;
+    showPersonaSection();
+  }
 }
-// Ask the board for its level; silent when it is not in MIDI mode. The
+// Ask the board for its level, stage and persona; silent when it is not in
+// MIDI mode. The
 // query is repeated every QUERY_MS until a reply lands — a board that has
 // just (re)appeared on USB may not be draining MIDI yet, and a single lost
 // query must not paint an error that the next reply wipes a moment later.
 // Only after QUERY_TRIES unanswered queries is the no-answer message shown.
 const QUERY_MS = 500, QUERY_TRIES = 6;
-async function queryVolume() {
+async function queryLive() {
   try {
     const out = await midiOut('volume-status');
     const inp = midiIn();
     if (!out || !inp) return;
     inp.onmidimessage = onMidiMessage;
-    volumeKnown = false; stageKnown = false;
+    volumeKnown = false; stageKnown = false; personaKnown = false;
+    showPersona();
     $('stage-mt').disabled = true; $('stage-sc').disabled = true;
     clearTimeout(queryTimer);
     readingDone();
     readingDone = slowStatus('volume-status', 'Reading the current level…');
     let tries = 0;
     const tick = () => {
-      if (volumeKnown) return;
+      if (volumeKnown) {
+        // The persona reply leaves in the same pass as the volume reply,
+        // so a firmware that knows the query has answered by now.
+        if (!personaKnown) {
+          personaSupported = false;
+          showPersonaSection();
+        }
+        return;
+      }
       if (tries++ >= QUERY_TRIES) {
         readingDone();
         setStatus('volume-status',
           'No answer from the board — its firmware may predate the volume control.', 'err');
+        setStatus('persona-status',
+          'No answer from the board. Check that it is plugged in and in normal (MIDI) mode.', 'err');
         return;
       }
       out.send(VOLUME_QUERY);
       if (!stageKnown) out.send(STAGE_QUERY);   // older firmware: no reply, box stays disabled
+      if (!personaKnown) out.send(PERSONA_QUERY);   // older firmware: no reply, section stays hidden
       queryTimer = setTimeout(tick, QUERY_MS);
     };
     tick();
@@ -548,12 +653,12 @@ function watchArrivals() {
   midiAccess.addEventListener('statechange', e => {
     if (e.port.type === 'input' && e.port.state === 'connected' &&
         e.port.name && e.port.name.includes(MIDI_NAME))
-      setTimeout(queryVolume, 300);      // let the output port appear too
+      setTimeout(queryLive, 300);        // let the output port appear too
   });
 }
 navigator.permissions?.query({ name: 'midi', sysex: true }).then(async st => {
   if (st.state !== 'granted') return;
-  await queryVolume();
+  await queryLive();
   watchArrivals();
 }).catch(() => { /* no permissions API for midi: wait for the first Set */ });
 
@@ -591,6 +696,9 @@ $('btn-set-volume').addEventListener('click', async () => {
     const inp = midiIn();
     if (inp) inp.onmidimessage = onMidiMessage;
     out.send(VOLUME_SYX(v));
+    // First MIDI access on this page: the persona section shows once the
+    // board answers this.
+    if (!personaKnown) out.send(PERSONA_QUERY);
     volumeKnown = true;                 // what we just sent is the level now
     showVolume();
     setStatus('volume-status',

@@ -60,6 +60,16 @@
   #stage .opt { margin: .6rem 0; display: grid; grid-template-columns: auto 1fr; column-gap: .5rem; align-items: baseline; }
   #stage .opt input { margin: 0; grid-row: 1 / span 2; align-self: start; position: relative; top: .15rem; }
   #stage .opt .sub { grid-column: 2; margin: .15rem 0 0; }
+  #persona .row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; margin-top: .6rem; }
+  #persona-buttons { display: contents; }
+  #persona-buttons button {
+    background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+    font-weight: 500;
+  }
+  #persona-buttons button:disabled { color: var(--dim); cursor: default; }
+  #persona-buttons button.active {
+    background: var(--btn); color: #1a1608; border-color: var(--btn); font-weight: 600;
+  }
   #volume .row { display: flex; align-items: center; gap: .8rem; margin-top: .6rem; }
   #volume input[type=range] { flex: 1; accent-color: var(--accent); min-width: 8rem; }
   #volume .val { font-family: ui-monospace, monospace; font-size: .82rem;
@@ -199,6 +209,19 @@
       On Windows, the browser needs a one-time driver step before it can talk
       to the board — <a href="#" id="win-help">how to set that up</a>.
     </p>
+  </section>
+
+  <section id="persona" class="hidden">
+    <h2>Persona</h2>
+    <p class="tag">
+      Switches persona live while the board is in normal (MIDI) mode, the
+      same as the button on the board. The board starts the last persona
+      again on the next power-up.
+    </p>
+    <div class="row">
+      <span id="persona-buttons"></span>
+    </div>
+    <div class="status" id="persona-status"></div>
   </section>
 
   <section id="volume">
