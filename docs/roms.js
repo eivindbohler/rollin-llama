@@ -8,7 +8,7 @@ export const PERSONAS = [
   { id: 'cm32l',   label: 'CM-32L',    version: 'v1.02',  set: 'cm32l' },
   { id: 'sc55mk1', label: 'SC-55 mk1', version: 'v1.21',     set: 'sc55-mk1' },
   { id: 'sc55mk2', label: 'SC-55 mk2', version: 'v1.01',     set: 'sc55-mk2' },
-  { id: 'gs2k',    label: 'MU2000',    version: 'v2.01',     set: 'gs2k' },
+  { id: 'gs2k',    label: 'GS2K',      version: 'MU2000 v2.01',     set: 'gs2k' },
 ];
 
 export const REFERENCE_ROMS = [

@@ -1252,7 +1252,7 @@ let pendingUpload = null;
 
 function onRomListClick(e) {
   if (!picoboot) return;
-  if (e.target.dataset?.gs2kWrite !== undefined) return writeGs2k();   // the MU2000 card's "Write to board"
+  if (e.target.dataset?.gs2kWrite !== undefined) return writeGs2k();   // the GS2K ROM block's "Write to board"
   const name = e.target.dataset?.upload;
   if (!name) return;
   pendingUpload = name;
@@ -1443,7 +1443,7 @@ $('zip-file').addEventListener('change', async e => {
       else {
         setStatus('rom-status', 'Writing the MU2000 ROMs…');
         await writeGs2k();
-        if (gs2kOk) done += gsTodo.length; else failed.push('MU2000');
+        if (gs2kOk) done += gsTodo.length; else failed.push('GS2K');
       }
     }
   } finally {
@@ -1624,7 +1624,7 @@ function showGs2kDots(state) {
   renderGs2kNote();
 }
 
-// The line under the MU2000 card: what is still needed, or the button that
+// The line under the GS2K ROM block: what is still needed, or the button that
 // writes a complete set that is not on the board (after an erase, or after
 // a write that did not verify).
 function renderGs2kNote() {
@@ -1734,8 +1734,8 @@ async function acceptGs2k(r, p, file) {
   }
   const { samples, ctl } = gs2kImages(personaRecord(GS2K));
   if (!samples || !ctl) {
-    showError('MU2000 not supported yet',
-      '<p>The firmware installed on this board has no MU2000. Flash a newer ' +
+    showError('GS2K not supported yet',
+      '<p>The firmware installed on this board has no GS2K persona. Flash a newer ' +
       'firmware release first, then upload the MU2000 ROMs. Nothing was written.</p>');
     return;
   }
@@ -1802,7 +1802,7 @@ async function writeGs2k() {
     if (pack.samples.length !== sIm.bytes || pack.ctl.length > cIm.bytes || want !== target ||
         (cexp && (pack.ctl.length !== cexp.bytes || crc32(pack.ctl) !== cexp.crc))) {
       refused = true;
-      throw new Error('The converted MU2000 data does not match what the firmware on ' +
+      throw new Error('The GS2K data converted from the MU2000 ROMs does not match what the firmware on ' +
                       'this board expects. Update the firmware, then try again. Nothing was written.');
     }
 
@@ -1832,8 +1832,8 @@ async function writeGs2k() {
     say(good ? '' : 'not verified — write again', good ? '' : 'err');
     if (!good)
       showError('Verification failed',
-        '<p>The MU2000 data was written, but reading it back did not match. ' +
-        'Write it again with the button on the MU2000 card.</p>');
+        '<p>The GS2K data was written, but reading it back did not match. ' +
+        'Write it again with the Write to board button under GS2K.</p>');
   } catch (err) {
     gs2kRetry = !refused;
     if (touched) { gs2kOk = false; showGs2kDots(null); say('not verified — write again', 'err'); }
@@ -1841,7 +1841,7 @@ async function writeGs2k() {
     if (picoboot)      // an unplug is already reported by the disconnect handler
       showError('Upload failed',
         `<p>${escHtml(err.message)}</p>` +
-        (touched ? '<p>The MU2000 data on the board may be partly written — write it ' +
+        (touched ? '<p>The GS2K data on the board may be partly written — write it ' +
                    'again before rebooting the board.</p>' : ''));
   } finally {
     linkBusy = false;
